@@ -1,0 +1,1 @@
+[20-Dec-2004 01:21:30] PHP Fatal error:  Call to undefined function:  add_filter() in /home/mtsix/public_html/wp-content/plugins/google-hilite.php on line 130

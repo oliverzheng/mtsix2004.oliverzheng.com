@@ -1,0 +1,22 @@
+RewriteEngine On
+RewriteBase /
+RewriteRule ^about/([a-zA-Z0-9]*)/ /about.php?section=$1 [QSA]
+RewriteRule ^about/ /about.php [QSA]
+RewriteRule ^history/ /misc.php?section=history [QSA]
+RewriteRule ^links/ /misc.php?section=links [QSA]
+RewriteRule ^work/([0-9A-Za-z]+)/([0-9]+)/view/([0-9A-Za-z/._-]*) /portfolio/$2/$3 [QSA]
+RewriteRule ^work/([0-9A-Za-z]+)/([0-9]+)([/]?) /work.php?category=$1&id=$2 [QSA]
+RewriteRule ^work/([0-9A-Za-z]+)([/]?) /work.php?category=$1  [QSA]
+RewriteRule ^work/ /work.php [QSA]
+RewriteRule ^about/ /about.php  [QSA]
+RewriteRule ^contact/([a-zA-Z-]*) /contact.php?sent=$1 [QSA]
+
+RewriteRule ^notepad/category/(.*)/(feed|rdf|rss|rss2|atom)/?$ /wp-feed.php?category_name=$1&feed=$2 [QSA]
+RewriteRule ^notepad/category/?(.*) /index.php?category_name=$1 [QSA]
+RewriteRule ^notepad/author/(.*)/(feed|rdf|rss|rss2|atom)/?$ /wp-feed.php?author_name=$1&feed=$2 [QSA]
+RewriteRule ^notepad/author/?(.*) /index.php?author_name=$1 [QSA]
+RewriteRule ^notepad/([0-9]{4})?/?([0-9]{1,2})?/?([0-9]{1,2})?/?([_0-9a-z-]+)?/?([0-9]+)?/?$ /index.php?year=$1&monthnum=$2&day=$3&name=$4&page=$5 [QSA]
+RewriteRule ^notepad/([0-9]{4})/([0-9]{1,2})/([0-9]{1,2})/([_0-9a-z-]+)/(feed|rdf|rss|rss2|atom)/?$ /wp-feed.php?year=$1&monthnum=$2&day=$3&name=$4&feed=$5 [QSA]
+RewriteRule ^notepad/([0-9]{4})/([0-9]{1,2})/([0-9]{1,2})/([_0-9a-z-]+)/trackback/?$ /wp-trackback.php?year=$1&monthnum=$2&day=$3&name=$4 [QSA]
+RewriteRule ^feed/?([_0-9a-z-]+)?/?$ /wp-feed.php?feed=$1 [QSA]
+RewriteRule ^comments/feed/?([_0-9a-z-]+)?/?$ /wp-feed.php?feed=$1&withcomments=1 [QSA]

@@ -1,0 +1,16 @@
+daTextBox=<FONT FACE="Arial" SIZE="12" COLOR="#ffffff">
+<B>welcome to the box of basic math!</B></FONT>
+<BR>
+<FONT FACE="Arial" SIZE="11" COLOR="#ffffff">Some of the math basics I learned in my "out of the box" (OTB) class are algebra, analytic geometry, and some interesting things about numbers. You probably haven't met these things yet, but I'll explain them right now.
+<br><b>Algebra:</b>
+<p>This word sounds very awkward, but it is very useful. It can solve problems that are very complicated. When used to this method, you can get an answer easily from a problem.
+<br><b>Analytic Geometry:</b>
+<p>Analytic geometry is the y-axis and the x-axis things. You've probably seen those in your geometry class, and this is what it is. However, it is a little different. It is more complicated and more useful. If you have an equation for both x and y, such as "y=2x", there is a graph for it. It is actully very useful.
+<br><b>Number facts:</b>
+<p>I learned some number tricks that could trick people.
+<br><b>Useful links:</b>
+<p>*<a href="http://www.algebra.com/">Algebra.com</a>
+<p>*<a href="http://www.algebrahelp.com/">Algebrahelp.com</a>
+<p>*<a href="http://www.ping.be/~ping1339/analyt.htm">Analytic Geometry (in a plane)</a>
+<p>*<a href="http://www.algebra.com/">Algebra.com</a>
+<p>*<a href="http://www.geocities.com/EnchantedForest/Tower/1133/funwith.htm">Number tricks</a>

@@ -1,0 +1,13 @@
+IndexIgnore *
+<Files plugin_data>
+order allow,deny
+deny from all
+</Files>
+<Files installed>
+order allow,deny
+deny from all
+</Files>
+<Files params>
+order allow,deny
+deny from all
+</Files>

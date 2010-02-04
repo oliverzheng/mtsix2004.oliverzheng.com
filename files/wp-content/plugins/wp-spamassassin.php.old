@@ -1,0 +1,182 @@
+<?php
+/*
+Plugin Name: WP SpamAssassin
+Version: 0.6.2
+Plugin URI: http://www.ioerror.us/wp-spamassassin/
+Description: Filters WordPress comments through SpamAssassin. It speaks the SpamAssassin protocol natively so you don't need the spamc client installed and you don't have to mess with any Perl modules.
+Author: Michael Hampton
+Author URI: http://www.ioerror.us/
+License: GPL
+
+This is beta software so please report any problems to
+error AT ioerror DOT us
+*/ 
+
+
+//-----------------------------------------------------------------------------
+// Configure your SpamAssassin server here.
+
+// Spam tag. Place this tag in your moderation keywords (and change it to
+// something else if you wish). We will tag messages with this tag if they
+// are suspicious, but not absolutely spam. They will then be sent to the
+// moderation queue. The default tag is simply the md5sum of the word "SPAM".
+// NB: This is not needed or used on 1.5; it automatically sends comments
+// to moderation without tagging.
+$wp_spamd_tag = "c72beebe6ecbdddff71b846c4858ebcb";
+
+// Suspicious message threshold. Normally set at 0. SA returns negative numbers
+// for messages which definitely aren't spam. You can adjust it up or down if
+// you find that messages are getting through which shouldn't, or vice versa.
+$wp_spamd_suspicious = 0.0;
+
+// If you want to use a spamd server running on the same machine, uncomment
+// the next line, changing the name of the UNIX domain socket if necessary,
+// and comment out the two lines after it.
+// $wp_spamd_socket = "/tmp/spamd.socket";
+$wp_spamd_server = "localhost";
+$wp_spamd_port = 783;
+
+// Where do you want to send spammers?
+$wp_spamd_redirect = "http://www.ftc.gov/bcp/conline/pubs/alerts/whospamalrt.htm";
+
+// No further configuration needed.
+//-----------------------------------------------------------------------------
+
+$wp_spamd_approved = 1;
+
+// Send a comment through to SpamAssassin and see what comes back.
+function wp_spamassassin_check($commentdata) {
+	global $wp_spamd_server, $wp_spamd_port, $wp_spamd_redirect;
+	global $wp_spamd_socket, $wp_spamd_tag, $wp_spamd_suspicious;
+	global $wp_spamd_approved, $wp_version;
+
+	extract($commentdata);
+
+	$user_ip = $_SERVER['REMOTE_ADDR'];
+
+	// Create mini-RFC822 message and translate it to DOS format for spamd
+	$message = "From $comment_author_email " . gmdate("D M d H:i:s Y") . "\nReceived: from " . gethostbyaddr($user_ip) . " ($user_ip) by " . $_SERVER["HTTP_HOST"] . " with HTTP via Wordpress;\n\t" . date("r") . "\nFrom: $comment_author <$comment_author_email>\nDate: " . date("r") . "\nSubject: WordPress comment\nTo: " . convert_chars(apply_filters('bloginfo', get_bloginfo('admin_email'))) . "\n\n$comment_author_url\n$comment_content";
+	// This mysterious stuff just changes line endings regardless of
+	// what we actually receive, ending with DOS format \r\n
+	// TODO: There's probably a better way to do this.
+	$message = str_replace("\r\n", "\n", $message);
+	$message = str_replace("\r", "\n", $message);
+	$message = str_replace("\n", "\r\n", $message);
+
+	// Prepare the message to the spamd server
+	$length = strlen($message);
+	$message = "CHECK SPAMC/1.2\r\nContent-Length: " . $length . "\r\n\r\n" . $message;
+
+	// Connect to the spamd server
+	// If we can't connect, return control to WordPress.
+	// If a UNIX domain socket was specified, try to connect to it first,
+	// otherwise try the server and port specified.
+	if ($wp_spamd_socket) {
+		if (false == ($s = @socket_create(AF_UNIX, SOCK_STREAM, 0))) {
+			return $commentdata;
+		}
+		if (false == (@socket_connect($s, $wp_spamd_socket))) {
+			return $commentdata;
+		}
+	} else {
+		if (false == ($s = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP))) {
+			return $commentdata;
+		}
+		if (false == (@socket_connect($s, gethostbyname($wp_spamd_server), $wp_spamd_port))) {
+			return $commentdata;
+		}
+	}
+	// Send the message and see what SpamAssassin thinks of it
+	while ($message) {
+		$sent = @socket_write($s, $message, strlen($message));
+		if ($sent === false) {
+			return $commentdata;
+		}
+		$message = substr($message, $sent, -1);
+	}
+	// spamd waits for us to shutdown one side of the connection
+	// We shut down the writing side of course
+	@socket_shutdown($s, 1);
+	// Now read the response from SpamAssassin
+	$line = trim(@socket_read($s, 1024, PHP_NORMAL_READ));
+	// Ensure that the response is valid
+	if (strncasecmp($line, "SPAMD", 5)) {
+		@socket_shutdown($s, 2);
+		return $commentdata;
+	}
+	// Eat the newline
+	@socket_read($s, 1024, PHP_NORMAL_READ);
+	// If so, then see if it's spam or not!
+	$line = trim(@socket_read($s, 1024, PHP_NORMAL_READ));
+	$line_exploded = explode(" ", $line);
+	// Let people know that we are actually doing something
+	// Work around a stupid and all-too-common PHP misconfiguration
+	$d = ini_get('display_errors');
+	ini_set('display_errors', 0);
+	trigger_error(sprintf("SpamAssassin: screened %s from %s by %s at %s. Spam: %s %s / %s", empty($comment_type) ? "comment" : $comment_type, $user_ip, $comment_author, $comment_author_email, $line_exploded[1], $line_exploded[3], $line_exploded[5]));
+	// Reset the PHP misconfiguration to its previous value
+	ini_set('display_errors', $d);
+	// Shutdown the other side of the socket since we're done
+	@socket_shutdown($s, 2);
+	// Anything which is surely spam will be discarded
+	if (!strcasecmp($line_exploded[1], "True")) {
+		// Send our spammer away
+		header("Location: " . $wp_spamd_redirect);
+		die('');
+	}
+	// Anything which is suspicious will be tagged.
+	if ($line_exploded[3] > $wp_spamd_suspicious) {
+		if ($wp_version >= 1.5) {
+			$wp_spamd_approved = 0;
+		} else {
+			$comment_text = $wp_spamd_tag . "\n$comment_text";
+		}
+	}
+	// That's it!
+	$commentdata = compact('comment_post_ID', 'comment_author', 'comment_author_email', 'comment_author_url', 'comment_content', 'comment_type');
+	return $commentdata;
+}
+
+// Send a comment through to SpamAssassin and see what comes back.
+// On 1.3 we use the 1.2 approach for now.
+function wp_spamassassin_check_12($comment_text) {
+	global $author, $email, $url, $comment, $comment_post_ID;
+
+	// Some stuff to deal with 1.3
+	global $comment_author, $comment_author_email, $comment_author_url;
+	global $comment_type;
+
+	// Reorganize everything into the new format
+	if (empty($comment_author))
+		$comment_author = $author;
+	if (empty($comment_author_email))
+		$comment_author_email = $email;
+	if (empty($comment_author_url))
+		$comment_author_url = $url;
+	if (empty($comment_content))
+		$comment_content = $comment_text;
+	if (empty($comment_type))
+		$comment_type = '';	// comment
+
+	$commentdata = compact('comment_post_ID', 'comment_author', 'comment_author_email', 'comment_author_url', 'comment_content', 'comment_type');
+	$commentdata = wp_spamassassin_check($commentdata);
+	extract($commentdata);
+	return $comment_text;
+}
+
+function wp_spamassassin_moderate($approved) {
+	global $wp_spamd_approved;
+
+	return $wp_spamd_approved;
+}
+
+// Now we set the function up to execute when someone posts a comment
+if ($wp_version >= 1.5) {
+	add_action('preprocess_comment', 'wp_spamassassin_check', 1);
+	add_action('pre_comment_approved', 'wp_spamassassin_moderate', 1);
+} else {
+	add_action('post_comment_text', 'wp_spamassassin_check_12', 1);
+}
+
+
+?>

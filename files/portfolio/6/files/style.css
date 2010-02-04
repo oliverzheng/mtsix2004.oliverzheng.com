@@ -1,0 +1,72 @@
+BODY {
+	SCROLLBAR-FACE-COLOR: #f0f0f0; FONT-SIZE: 10px; SCROLLBAR-HIGHLIGHT-COLOR: #ffffff; SCROLLBAR-SHADOW-COLOR: #c3c3c3; SCROLLBAR-3DLIGHT-COLOR: #c3c3c3; SCROLLBAR-ARROW-COLOR: #ffffff; SCROLLBAR-TRACK-COLOR: #f0f0f0; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif; SCROLLBAR-DARKSHADOW-COLOR: #f0f0f0
+}
+.app {
+	BORDER-RIGHT: #c4c4c4 1px solid; BORDER-TOP: #c4c4c4 1px solid; BORDER-LEFT: #c4c4c4 1px solid; WIDTH: 100%; BORDER-BOTTOM: #c4c4c4 1px solid; BACKGROUND-COLOR: #e9e9e9
+}
+.app A {
+	COLOR: #4a4b4b; TEXT-DECORATION: none
+}
+.app A:hover {
+	COLOR: #8d1c1c; TEXT-DECORATION: underline
+}
+LINK {
+	COLOR: #8d1c1c; TEXT-DECORATION: underline
+}
+visited {
+	COLOR: #8d1c1c; TEXT-DECORATION: underline
+}
+.app TD {
+	BORDER-TOP: #ffffff 1px solid; FONT-SIZE: 11px; COLOR: #555555; BORDER-BOTTOM: #c4c4c4 1px solid; FONT-FAMILY: Arial, Helvetica, sans-serif
+}
+P {
+	FONT-SIZE: 11px; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+.date {
+	FONT-WEIGHT: bold; FONT-SIZE: 10px; COLOR: #999999; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+H1 {
+	FONT-WEIGHT: bold; FONT-SIZE: 16px; COLOR: #3f5363; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+A {
+	COLOR: #5f7383; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif; TEXT-DECORATION: none
+}
+A:hover {
+	COLOR: #5f7383; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif; TEXT-DECORATION: underline
+}
+.baselink {
+	FONT-SIZE: 10px; COLOR: #666666; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif; TEXT-DECORATION: none
+}
+TD {
+	FONT-SIZE: 11px; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+.sidelinks {
+	FONT-WEIGHT: normal; FONT-SIZE: 11px; COLOR: #e30000; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+.sidelinks-on {
+	FONT-WEIGHT: normal; FONT-SIZE: 11px; COLOR: #66cc00; FONT-FAMILY: Verdana, Arial, Helvetica, sans-serif
+}
+.light-border {
+	BORDER-RIGHT: #eeeeee 1px solid; PADDING-RIGHT: 10px; BORDER-TOP: #eeeeee 1px solid; PADDING-LEFT: 10px; PADDING-BOTTOM: 10px; BORDER-LEFT: #eeeeee 1px solid; PADDING-TOP: 10px; BORDER-BOTTOM: #eeeeee 1px solid; BACKGROUND-COLOR: #fafafa
+}
+.light-border-custom {
+	BORDER-RIGHT: #333333 1px solid; PADDING-RIGHT: 10px; BORDER-TOP: #333333 1px solid; PADDING-LEFT: 10px; PADDING-BOTTOM: 10px; BORDER-LEFT: #333333 1px solid; PADDING-TOP: 10px; BORDER-BOTTOM: #333333 1px solid; BACKGROUND-COLOR: #ebebeb
+}
+.light-border-white {
+	BORDER-RIGHT: #eeeeee 1px solid; PADDING-RIGHT: 10px; BORDER-TOP: #eeeeee 1px solid; PADDING-LEFT: 10px; FONT-SIZE: 11px; PADDING-BOTTOM: 10px; BORDER-LEFT: #eeeeee 1px solid; LINE-HEIGHT: normal; PADDING-TOP: 10px; BORDER-BOTTOM: #eeeeee 1px solid; BACKGROUND-COLOR: #ffffff
+}
+LI {
+	LIST-STYLE-IMAGE: url(images/bullet.gif)
+}
+INPUT {
+	BORDER-RIGHT: #dedede 1px solid; BORDER-TOP: #dedede 1px solid; FONT-WEIGHT: 100; FONT-SIZE: 10px; BACKGROUND: #ffffff; TEXT-TRANSFORM: none; BORDER-LEFT: #dedede 1px solid; COLOR: #000000; BORDER-BOTTOM: #dedede 1px solid; FONT-STYLE: normal; FONT-FAMILY: Verdana, Serif; TEXT-DECORATION: none
+}
+TEXTAREA {
+	BORDER-RIGHT: #dedede 1px solid; BORDER-TOP: #dedede 1px solid; FONT-WEIGHT: 100; FONT-SIZE: 10px; BACKGROUND: #ffffff; TEXT-TRANSFORM: none; BORDER-LEFT: #dedede 1px solid; COLOR: #000000; BORDER-BOTTOM: #dedede 1px solid; FONT-STYLE: normal; FONT-FAMILY: Verdana, Serif; TEXT-DECORATION: none
+}
+OPTION {
+	BORDER-RIGHT: #dedede 1px solid; BORDER-TOP: #dedede 1px solid; FONT-WEIGHT: 100; FONT-SIZE: 10px; BACKGROUND: #ffffff; TEXT-TRANSFORM: none; BORDER-LEFT: #dedede 1px solid; COLOR: #000000; BORDER-BOTTOM: #dedede 1px solid; FONT-STYLE: normal; FONT-FAMILY: Verdana, Serif; TEXT-DECORATION: none
+}
+SELECT {
+	BORDER-RIGHT: #dedede 1px solid; BORDER-TOP: #dedede 1px solid; FONT-WEIGHT: 100; FONT-SIZE: 10px; BACKGROUND: #ffffff; TEXT-TRANSFORM: none; BORDER-LEFT: #dedede 1px solid; COLOR: #000000; BORDER-BOTTOM: #dedede 1px solid; FONT-STYLE: normal; FONT-FAMILY: Verdana, Serif; TEXT-DECORATION: none
+}

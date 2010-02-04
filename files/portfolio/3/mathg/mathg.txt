@@ -1,0 +1,7 @@
+daTextBox=<FONT FACE="Arial" SIZE="12" COLOR="#ffffff">
+<B>welcome to the box of graphic math!</B></FONT>
+<BR>
+<FONT FACE="Arial" SIZE="11" COLOR="#ffffff">This is basically transforming an equation into lines or planes or figures, depending on the dimension. I've really got nothing to say about this, but here are some really cool links:
+<p>*<a href="http://www.ima.umn.edu/~arnold/complex-g.html">http://www.ima.umn.edu/~arnold/complex-g.html
+<p>^==The best graphics on the net!==^</a>
+<p>That'll do enough...there are links on that page too.

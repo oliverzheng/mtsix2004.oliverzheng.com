@@ -1,0 +1,8 @@
+daTextBox=<FONT FACE="Arial" SIZE="12" COLOR="#ffffff">
+<B>welcome to the box of musical math!</B></FONT>
+<BR>
+<FONT FACE="Arial" SIZE="11" COLOR="#ffffff">If you play an instrument or piano or something, you will have to know notes. When you play those notes out, they have different sounds with different pitches. The higher a pitch is, the higher the note sounds. This is made with mathematics, if you didn't know. The higher a pitch is, the bigger that note's number is. For example, the middle C on piano is 60. An octive higher makes the number double; and an octive lower makes the number halfened, that's the only word I can think of.
+<p>Midi, computer music, works this way too. If you enter a number, the sound card on your computer will play that number as a note. There are many programs like this on the net now, such as GoldWave.
+<br>Here are some cool links you might want to visit:
+<p>*<a href="http://www.xs4all.nl/~onnoz/musiquantics/">Musiquantics...I don't know either...</a>
+<p>*<a href="http://physics.hallym.ac.kr/education/wave/music/despatte.html">Patterns: Musical Math</a>

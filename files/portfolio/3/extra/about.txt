@@ -1,0 +1,8 @@
+daTextBox=<FONT FACE="Arial" SIZE="12" COLOR="#ffffff">
+<B>about</B></FONT><br>
+<FONT FACE="Arial" SIZE="11" COLOR="#ffffff">This is the "out of the box" page of Oliver, that's me.
+<p>This webpage is designed for my "out of the box" class by me. There are some interesting math stuff on this page, as well as some cool animations. If you have any questions, email me.
+<br>
+Enough of this! Go check the boxes!
+<br>
+(C) Copyright 2004 mtsix.com, Oliver Zheng.

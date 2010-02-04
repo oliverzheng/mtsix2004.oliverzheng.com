@@ -1,0 +1,2594 @@
+<?php
+/*
+Plugin Name: Spam Karma
+Plugin URI: http://www.unknowngenius.com/blog/wordpress/spam-karma
+Description: Ultimate Spam Fighting Tool. Configure on the <a href="admin.php?page=spam-karma.php">Options &gt; Spam Karma</a> page. <br/><br/><i>IF you are running WP 1.2, you need to configure this plugin by browsing to: <a href="../wp-content/plugins/spam-karma.php?spamk_setup=1">wp-content/plugins/spam-karma.php?spamk_setup=1</a></i>
+Version: 1.18 alpha 3
+Author: drDave
+Author URI: http://unknowngenius.com/blog
+*/
+/*
+Spam Karma - Adds additional filtering to the comment system.
+
+This code is licensed under the MIT License.
+http://www.opensource.org/licenses/mit-license.php
+Copyright (c) 2004 drDave & Owen Winkler
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to
+do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall
+be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+include((dirname(dirname(__FILE__))) . "/spam-karma/spamk_include.php");
+
+define('kBlacklistURL', 'http://www.unknowngenius.com/blog/blacklist/');
+define ('kCaptchaTempFolder', ABSPATH . '/wp-content/spam-karma/captcha_temp/');
+
+if (isset($_REQUEST['spamk_setup']) && !isset($_REQUEST['override']) && is_file(ABSPATH . "wp-admin/admin.php"))
+{
+    die ("If you are using version 1.3.2 and up, please use the Admin menu to access Spam Karma options (under Options >> Spam Karma). You can also use this direct link: <a href=\"". get_settings("siteurl") . "/wp-admin/admin.php?page=spam-karma.php\">". get_settings("siteurl") . "/wp-admin/admin.php?page=spam-karma.php</a>");
+}
+
+if (function_exists('load_plugin_textdomain'))
+{
+    load_plugin_textdomain('spamkdomain');
+    $insert_html = false;
+}
+else
+    $insert_html = true;
+
+if ($insert_html)
+{
+	global $spamk_already_ran;
+	if ($spamk_already_ran)
+		return;
+	$spamk_already_ran = true;
+
+    if(isset($_REQUEST['spamk_setup']))
+    {
+        get_currentuserinfo();
+        if ($user_level < 8)
+            die ("Sorry, you must be logged in and at least a level 8 user to access Spam Karma's setup options.");
+    }
+}
+
+global $open_meta_spamk, $close_meta_spamk;
+        $open_meta_spamk = "<!-- spamk    : ";
+        $close_meta_spamk = " -->";
+
+if (! function_exists('is_plugin_page'))
+{
+    function is_plugin_page()
+    {
+        return isset($_REQUEST['spamk_setup']);
+    }
+}
+
+
+if (! function_exists('spamk_add_options_page'))
+{
+    function spamk_add_options_page()
+    {
+        if (function_exists('add_options_page'))
+            add_options_page(__("Spam Karma Options Page"), __('Spam Karma'), 7, basename(__FILE__));
+    }
+
+}
+
+if (! function_exists('spamk_option_set'))
+{
+    function spamk_option_set($option)
+    {
+        if (! $options = spamk_get_settings('spamk_options'))
+            return false;
+        else
+            return (in_array($option, $options));
+    }
+
+}
+
+if (!function_exists('stripos'))
+{
+    function stripos($haysack, $needle)
+    {
+        return strpos(strtolower($haysack), strtolower($needle));
+    }
+}
+
+ if (!function_exists('array_diff_key'))
+ {
+ // PHP < 5 compatibility
+    function array_diff_key()
+    {
+        $argCount  = func_num_args();
+        $argValues  = func_get_args();
+        $valuesDiff = array();
+
+        if ($argCount < 2)
+            return false;
+
+        foreach ($argValues as $argParam)
+            if (!is_array($argParam))
+                return false;
+
+        foreach ($argValues[0] as $valueKey => $valueData)
+        {
+            for ($i = 1; $i < $argCount; $i++)
+                if (isset($argValues[$i][$valueKey]))
+                    continue 2;
+
+            $valuesDiff[$valueKey] = $valueData;
+        }
+
+        return $valuesDiff;
+    }
+ }
+
+// Taken from MT-Blacklist by way of WP-Blacklist
+if (! function_exists('sanctify'))
+{ //###DdV cleans a given string so that it will work with regex
+
+    function sanctify($url)
+    {
+        // modify Jay Allen stuff to work with PHP
+        if (strpos($url, '[\w\-_.]'))
+        {
+            $url = str_replace('[\w\-_.]','[-\w\_.]',$url);
+        }
+        // get rid of all unescaped forwardslashes
+        $ps = strpos($url, '/');
+        while ($ps !== False)
+        {
+            if ($ps == 0)
+            {
+                // slash at beginning, escape
+                $url = '\\' + $url;
+            }
+            else if (substr($url, $ps-1, 1) != '\\')
+            {
+                $url = substr_replace($url, '\/', $ps, 1);
+            }
+            $ps = strpos($url, '/', $ps+2);
+        }
+        $buf = trim($url);
+        return $buf;
+    }
+}
+
+if (! function_exists('download_blacklist_update'))
+{
+    function download_blacklist_update($blacklist_url)
+    { // ###DdV TODO: worry about magic_quote and all that...
+        global $wpdb;
+        $imported = $error = $duplicates = 0;
+
+        echo '<p>' . __("Populating WP-Blacklist Table from: '$blacklist_url'", 'spamkdomain') . '</p>';
+        if (empty($blacklist_url))
+            echo "<p class=\"error\">" . __("<strong>ERROR:</strong> You need to provide a valid Blacklist URL.") . "</p>";
+
+        // Some hosts disable remote file opening: providing a manual workaround
+        if (!ini_get("allow_url_fopen"))
+            if (is_file($blacklist_url))
+            {
+                _e("Using local blacklist file: <i>". $blacklist_url . "</i> (remember to update this file regularly).");
+            }
+            else
+            {
+
+                _e("<p><strong>Warning:</strong> Your host has disabled the 'allow_url_fopen' feature on this install of PHP. As a result, Spam Karma will not be able to download the blacklist automatically from the central server.</p>
+    <p>If you want to use blacklist-related features (recommended), you need to download manually the blacklist from this URL: <a href=\"". kBlacklistURL . "\" target=\"_blank\">". kBlacklistURL . "</a>, save it locally as <i>blacklist.txt</i> and upload it on your server in the <i>wp-content</i> directory. Once done, reload this Option page.</p>
+<p>For Spam Karma to be as efficient as possible, you should update this blacklist file at least once every few weeks (by downloading again from the above URL or any other public blacklist repository).</p>");
+
+                $new_settings = spamk_get_settings('spamk_settings');
+                $blacklist_url = $new_settings['blacklist_url'] = ABSPATH . "wp-content/blacklist.txt";
+                spamk_update_option('spamk_settings', $new_settings);
+
+                _e("<p><strong>Blacklist table update cancelled.</strong></p>");
+
+                if (! is_file($blacklist_url))
+                    return;
+            }
+
+        if (! $list = @file($blacklist_url))
+            _e("<strong>ERROR:</strong> Could not download from this Blacklist URL.") . $blacklist_url . "</br>";
+        else
+        {
+            foreach ($list as $entry)
+            {
+               if (preg_match("/^([^#]+)\\s*(#(:(regex\\-url|url|regex\\-ip|ip|auto\\-url|auto\\-ip|rbl):)?)?.*\$/", $entry, $matches))
+               {
+                    $val = $matches[1];
+                    if (count($matches) == 5)
+                        $type = $matches[4];
+                    else
+                    { // try to guess
+                        if (preg_match("/[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/", $val, $junk))
+                            $type = "ip";
+                        elseif (strpos($val, array("[", "]", "(", ")", "*", "\\", "{", "}")) !== false)
+                            $type = "regex-url";
+                        else
+                            $type = "url";
+
+                    }
+                    $new_vals[$type][] = sanctify($val);
+               }
+               else
+                    echo __("Not a valid entry: ") . $entry . "<br/>";
+
+            }
+
+
+            foreach($new_vals as $type => $vals)
+            {
+                if (($type == "url") || ($type == "ip"))
+                {
+                    $orig = count($vals);
+                    $screened = screen_blacklist_candidates($vals, $type);
+                    $duplicates += $orig - $screened;
+
+                    if ($screened)
+                        foreach ($vals as $val)
+                        {
+                            if ($wpdb->query("INSERT INTO `blacklist` (`regex`, `regex_type`) VALUES ('". mysql_escape_string($val). "','$type')"))
+                                $imported++;
+                            else
+                                $error++;
+                        }
+
+                }
+                else
+                    foreach ($vals as $val)
+                        if (! $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex` = '". mysql_escape_string($val). "' AND `regex_type` = '$type'"))
+                        {
+                            if ($wpdb->query("INSERT INTO `blacklist` (`regex`, `regex_type`) VALUES ('". mysql_escape_string($val). "','$type')"))
+                                $imported++;
+                            else
+                                $error++;
+                        }
+                        else
+                            $duplicates++;
+            }
+        }
+        if ($error)
+            echo '<p class="error">' . __("$error errors while importing blacklist values.", 'spamkdomain') . '</p>';
+
+        echo '<p><strong>' . __("Populated WP-Blacklist table: imported $imported values, skipped $duplicates duplicates.", 'spamkdomain') . '</strong></p>';
+
+        if (!$imported && !$duplicates)
+        {
+            echo '<p class="error">' . __("Error: did not import anything...", 'spamkdomain') . '</p><br/>';
+        }
+        else
+        {
+            $new_settings = spamk_get_settings('spamk_settings');
+            $new_settings['last_blacklist_update'] = time();
+            spamk_update_option('spamk_settings', $new_settings);
+        }
+
+    }
+
+    function spamk_fix_blacklist_table()
+    {
+        global $wpdb;
+
+
+        if (! $wpdb->get_var("SHOW TABLES LIKE 'blacklist'"))
+        {
+            echo '<p><strong>' . __('Creating Blacklist Table.', 'spamkdomain') . '</strong></p>';
+            $sql = "CREATE TABLE IF NOT EXISTS `blacklist` (`id` int(11) NOT NULL auto_increment, `regex` varchar(200) NOT NULL default '',`regex_type` enum('ip','url','rbl','option', 'auto-url', 'auto-ip', 'regex-url', 'regex-ip') NOT NULL default 'url', KEY `id` (`id`), FULLTEXT KEY `regex` (`regex`)) TYPE=MyISAM";
+            $wpdb->query($sql);
+
+            $wpdb->query("ALTER  TABLE  `blacklist`  DROP  PRIMARY  KEY");
+            $wpdb->query("ALTER  TABLE  `blacklist` ADD  PRIMARY  KEY (`id`)");
+
+        }
+        else
+        {
+
+            echo '<p><strong>' . __('Updating Blacklist Table Structure.', 'spamkdomain') . '</strong></p>';
+
+            $cols = $wpdb->get_results("SHOW COLUMNS FROM `blacklist`");
+            foreach($cols as $col)
+            {
+                $cols_array[strtolower($col->Field)] = $col;
+                if (stristr($col->Extra, "auto_increment"))
+                    $wpdb->query("ALTER TABLE `blacklist` CHANGE `$col->Field` `$col->Field` $col->Type". (($col->Null)? "" : " NOT NULL") . (($col->Default) ? " DEFAULT " . $col->Default : "") );
+            }
+
+            $wpdb->query("ALTER TABLE `blacklist` DROP PRIMARY KEY");
+
+            if (isset($cols_array['id']))
+                $wpdb->query("ALTER  TABLE  `blacklist` CHANGE `id` `id` INT(11)  NOT NULL AUTO_INCREMENT PRIMARY  KEY");
+            else
+                $wpdb->query("ALTER  TABLE  `blacklist`  ADD  `id` INT(11) NOT  NULL AUTO_INCREMENT PRIMARY  KEY");
+
+
+            if (isset($cols_array['regex']))
+                $wpdb->query("ALTER  TABLE  `blacklist` CHANGE `regex` `regex` TEXT  NOT NULL");
+            else
+                $wpdb->query("ALTER  TABLE  `blacklist`  ADD  `regex` TEXT NOT  NULL;");
+
+            if (isset($cols_array['regex_type']))
+                $wpdb->query("ALTER TABLE `blacklist` CHANGE COLUMN `regex_type` `regex_type` enum('ip','url','rbl','option', 'auto-url', 'auto-ip', 'regex-url', 'regex-ip') NOT NULL DEFAULT 'url'");
+            else
+                $wpdb->query("ALTER  TABLE  `blacklist`  ADD `regex_type` enum('ip','url','rbl','option', 'auto-url', 'auto-ip', 'regex-url', 'regex-ip') NOT NULL DEFAULT 'url'");
+
+
+            // update table structure for WPBlacklist 2.1 onwards
+
+        }
+        $wpdb->query("DELETE FROM `blacklist` WHERE TRIM(`regex`) = ''");
+
+        return true;
+
+    }
+}
+
+if (! function_exists('screen_blacklist_candidates'))
+{
+
+    function screen_blacklist_candidates(&$entries, $type = "url")
+    { // Optimized to the bone... kinda...
+        global $wpdb;
+
+        $total = count($entries);
+        if (! $total)
+            return 0;
+
+        if (($type == "url") && count($entries))
+            foreach($entries as $index => $val)
+                if (strpos($val, ".") === false)
+                    $entries[$index] = "";
+
+        $entries = array_values(array_unique($entries));
+        $total = count($entries);
+        if (! $total)
+            return 0;
+
+
+        if ($db_strings = $wpdb->get_results("SELECT DISTINCT `regex` FROM `blacklist` WHERE `regex_type` = '$type' OR `regex_type` = 'auto-{$type}' ORDER BY `regex` ASC"))
+        {
+            foreach ($db_strings as $string)
+                $strings[] = $string->regex;
+
+            $entries = array_diff($entries, $strings);
+            $total = count($entries);
+
+            foreach ($entries as $key => $entry)
+            {
+                foreach ($strings as $string)
+                {
+                    if (!empty($entry) && (stripos($entry, $string) !== false))
+                    {
+                        //echo $entry . " # $string<br/>";
+                        $entries[$key] = "";
+                        $total--;
+                        break;
+                    }
+                }
+
+                if (! $total)
+                        break;
+            }
+        }
+
+        if ($total && ($db_regexes = $wpdb->get_results("SELECT `regex`, `regex_type` FROM `blacklist` WHERE `regex_type` = 'regex-{$type}' ORDER BY `regex` ASC")))
+        {
+            foreach ($db_regexes as $regex)
+                $regexes[] = $regex->regex;
+
+            $entries = array_diff($entries, $regexes);
+            $total = count($entries);
+
+            foreach ($entries as $key => $entry)
+            {
+                foreach ($regexes as $regex)
+                {
+                    if (!empty($entry) && (preg_match("/^$regex/", $entry)))
+                    {
+                        //echo $entry . " | $regex<br/>";
+                        $entries[$key] = "";
+
+                        --$total;
+                        break;
+                    }
+                    if (! $total)
+                            break;
+                }
+
+            }
+        }
+
+        if($total)
+        {
+            foreach($entries as $key => $val)
+            {
+                if (! empty($val))
+                    $new_entries[] = str_replace("\\.", ".", $val);
+            }
+            $entries = $new_entries;
+        }
+        else
+            $entries = array();
+
+        return count($entries);
+    }
+}
+
+// DEFAULT SETTINGS
+
+global $spamk_default_settings;
+$spamk_default_settings = array(
+	'mintime' => 3,
+	'maxtime' => 30,
+	'minlevel' => 2,
+	'recent' => 14,
+	'email_deleted_digest_size' => 10,
+	'digest_threshold_value' => 9,
+	'trigger' => 5,
+	'friendly_multiplier' => 1.4,
+	'badips' => "",
+	'flexibility' => 0,
+	'digest_count' => 0,
+	'digest_message' => "",
+	'approved_cmts' => 0,
+	'moderate_spam' => 0,
+	'del_spam' => 0,
+	'last_blacklist_update' => 0,
+	'created_blacklist_table' => false,
+	'link_trigger' => 3,
+	'blacklist_url' => kBlacklistURL,
+	'blacklist_update_time' => 24 * 3600 * 3, // 3 days
+	'skipped_count' => 0,
+	'delspam' => 0,
+	'approved_cmts' => 0,
+	'digest_count' => 0,
+);
+
+$default_options = array(
+	'hand_typed_entities',
+	'email_deleted',
+	'email_deleted_digest',
+	'no_via_header',
+	// 'good_referer',  // redundant with OSA can yield to false positives
+	'old_posts',
+	'snowball',
+	'wp-blacklist',
+	'admin_comment',
+	'captcha_test',
+	'use_rbl',
+	'too_many_links',
+	'email_moderation',
+	'osa_enabled',
+	'same_remote_ip',
+	'atleast_time',
+);
+
+
+// MAIN PLUGIN CODE
+if (is_plugin_page())
+{
+    if ($insert_html)
+    {
+    ?>
+        <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head>
+        <title>WordPress &rsaquo; Options &rsaquo; Spam Karma</title>
+        <link rel="stylesheet" href="../../wp-admin/wp-admin.css" type="text/css" />
+        <link rel="shortcut icon" href="../../wp-images/wp-favicon.png" />
+        <meta http-equiv="Content-Type" content="text/html; charset=<?php echo get_settings('blog_charset'); ?>" />
+        </head>
+        <body>
+    <?php
+    }
+?>
+<script type="text/javascript">
+<!--
+function checkAll(form)
+{
+	for (i = 0, n = form.elements.length; i < n; i++) {
+		if(form.elements[i].type == "checkbox") {
+			if(form.elements[i].checked == true)
+				form.elements[i].checked = false;
+			else
+				form.elements[i].checked = true;
+		}
+	}
+}
+//-->
+</script>
+
+<?php
+
+    if(isset($_REQUEST['reset_blacklist']))
+    { // RESET BLACKLIST (EMPTIES IT)
+        ?>
+         <div class="updated"><p>
+        <?php
+        if (! $removed = $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex_type` != 'option'"))
+            $removed = $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE 1");
+        if (! $wpdb->query("DELETE FROM `blacklist` WHERE `regex_type` != 'option'"))
+        {
+            _e("Could not delete, used 'truncate'. ");
+            $wpdb->query("TRUNCATE TABLE `blacklist`");
+        }
+        $spamk_settings = spamk_get_settings('spamk_settings');
+        $spamk_settings['created_blacklist_table'] = spamk_fix_blacklist_table();
+        spamk_update_option('spamk_settings', $spamk_settings);
+
+        echo __("Emptied Blacklist. Deleted: ") . $removed . " " . (($removed > 1)? __("entries"): __("entry")) . "<br />";
+        ?>
+        </div>
+        <?php
+    }
+    elseif(isset($_REQUEST['update_blacklist_options']) || isset($_REQUEST['update_blacklist']))
+    { // UPDATE BLACKLIST DOWNLOAD OPTIONS
+        ?>
+         <div class="updated"><p>
+        <?php
+            echo "<strong>Updating Blacklist Options</strong>";
+            $new_settings = spamk_get_settings('spamk_settings');
+
+            if (! empty($_REQUEST['blacklist_url']))
+                $new_settings['blacklist_url'] = $_REQUEST['blacklist_url'];
+            elseif (empty($new_settings['blacklist_url']))
+                $new_settings['blacklist_url'] = $spamk_default_settings['blacklist_url'];
+
+            if(! isset($_REQUEST['blacklist_auto_update']))
+                $new_settings['blacklist_update_time'] = 0;
+            else
+                if ($_REQUEST['blacklist_update_time'] < 2)
+                    $new_settings['blacklist_update_time'] = 2 * 24 * 3600; // min 2 days for now
+                else
+                    $new_settings['blacklist_update_time'] = $_REQUEST['blacklist_update_time'] * 24 * 3600;
+
+            if(isset($_REQUEST['update_blacklist']))
+            { // DOWNLOAD BLACKLIST
+                if (!$new_settings['created_blacklist_table'])
+                {
+                    $new_settings['created_blacklist_table'] = spamk_fix_blacklist_table();
+                    spamk_update_option('spamk_settings', $new_settings);
+                }
+
+                if ($new_settings['created_blacklist_table'])
+                    download_blacklist_update($new_settings['blacklist_url']);
+
+                $new_settings = spamk_get_settings('spamk_settings');
+            }
+
+            spamk_update_option('spamk_settings', $new_settings);
+
+        ?>
+        <strong><?php _e("") ?></strong>
+        </div>
+        <?php
+    }
+    elseif(isset($_REQUEST['blacklist_remove_ids']) && isset($_REQUEST['blacklist_remove_id']))
+    { // REMOVE IDS FROM BLACKLIST
+        ?>
+         <div class="updated"><p>
+        <?php
+        foreach($_REQUEST['blacklist_remove_id'] as $this_id => $junk)
+        {
+            $wpdb->query("DELETE FROM `blacklist` WHERE `id` = $this_id LIMIT 1");
+            $removed ++;
+        }
+
+        $new_settings = spamk_get_settings('spamk_settings');
+        $new_settings['repeating_offenders'] = array_diff_key($new_settings['repeating_offenders'], $_REQUEST['blacklist_remove_id']);
+        spamk_update_option('spamk_settings', $new_settings);
+
+        echo __("Removed ") . $removed . " " . (($removed > 1)? __("entries"): __("entry")) . "<br />";
+
+        ?>
+        </div>
+        <?php
+    }
+    elseif(isset($_REQUEST['blacklist_remove_ip'])
+    || isset($_REQUEST['blacklist_remove_url'])
+    || isset($_REQUEST['blacklist_remove_rbl']))
+    { // SELECT IP/URL TO REMOVE FROM BLACKLIST
+        ?>
+         <div class="updated"><p><form name="blacklist_remove_form" method="post">
+
+        <?php
+        if(isset($_REQUEST['blacklist_remove_ip']))
+            $type = "ip";
+        elseif(isset($_REQUEST['blacklist_remove_rbl']))
+            $type = "rbl";
+        else
+            $type = "url";
+
+        $val = $_REQUEST["blacklist_remove_{$type}_val"];
+        if (empty($val))
+        {
+            _e("You need to provide a valid IP/URL", 'spamkdomain');
+        }
+        else
+        {
+            $found = 0;
+            if ($list = $wpdb->get_results("SELECT `id`, `regex`, `regex_type` FROM `blacklist` WHERE `regex_type` = '$type' OR `regex_type` = 'regex-$type'"))
+            {
+                foreach($list as $this_entry)
+                {
+                    if($this_entry->regex_type == "regex-$type")
+                    {
+                        if (!empty ($this_entry->regex) && preg_match("/^" . $this_entry->regex . "/", $val))
+                        {
+                            $regex_match[$this_entry->id] = $this_entry->regex;
+                            $found++;
+                        }
+                    }
+                    else
+                    {
+                        if (stripos($val, $this_entry->regex) !== false)
+                        {
+                            $straight_match[$this_entry->id] = $this_entry->regex;
+                            $found++;
+                        }
+                    }
+                }
+            }
+            if ($found)
+            {
+
+                if (isset($regex_match))
+                {
+                    echo __("The following regexes matches in the blacklist were triggered by:") . " '$val'";
+                    echo "<ul>";
+                    foreach ($regex_match as $id => $str)
+                        echo "<li><input type=\"checkbox\" checked name=\"blacklist_remove_id[$id]\"> $str</li>";
+                    echo "</ul>";
+
+                }
+                if (isset($straight_match))
+                {
+                    echo __("The following plain text entries in the blacklist were triggered by:"). " '$val'";
+                    echo "<ul>";
+                    foreach ($straight_match as $id => $str)
+                        echo "<li><input type=\"checkbox\" checked name=\"blacklist_remove_id[$id]\"> $str</li>";
+                    echo "</ul>";
+                }
+
+                ?>
+                <p class="submit">
+                    <input name="blacklist_remove_ids" type="submit" id="blacklist_remove_ids" value="<?php _e('Remove Checked Entries', 'spamkdomain') ?>" />
+                </p>
+                <?php
+            }
+            else
+                _e("Blacklist contains no entry matching this string.");
+        }
+        ?>
+    </form></p></div>
+        <?php
+    }
+    elseif(isset($_REQUEST['blacklist_insert_ip'])
+     || isset($_REQUEST['blacklist_insert_url'])
+     || isset($_REQUEST['blacklist_insert_rbl'])
+     || isset($_REQUEST['blacklist_insert_regex-url']))
+    {
+        ?>
+         <div class="updated"><p>
+        <?php
+        if (isset($_REQUEST['blacklist_insert_regex-url']))
+        {
+                $type = "regex-url";
+                $val = $_REQUEST['blacklist_insert_regex-url'];
+
+                if ($wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex` = '". mysql_escape_string($val). "' AND `regex_type` = '$type'"))
+                    _e("Entry redundant (skipped).");
+                else
+                    if($wpdb->query("INSERT INTO `blacklist` SET `regex_type` = '$type', `regex` = '". mysql_escape_string($val) . "'"))
+                        _e("Successfully inserted $type.");
+                    else
+                        _e("Error: could not insert $type.");
+
+        }
+        else
+        {
+            if (isset($_REQUEST['blacklist_insert_ip']))
+                $type = "ip";
+            elseif (isset($_REQUEST['blacklist_insert_url']))
+                $type = "url";
+            elseif (isset($_REQUEST['blacklist_insert_rbl']))
+                $type = "rbl";
+
+            $insert_array = array($_REQUEST["blacklist_insert_$type"]);
+
+            if (screen_blacklist_candidates($insert_array, $type))
+            {
+                if($wpdb->query("INSERT INTO `blacklist` SET `regex_type` = '$type', `regex` = '". mysql_escape_string($insert_array[0]) . "'"))
+                    _e("Successfully inserted $type.");
+                else
+                    _e("Error: could not insert $type.");
+            }
+            else
+                _e("Entry redundant (skipped).");
+        }
+        ?>
+        </p></div>
+        <?php
+
+    }
+    elseif(isset($_REQUEST['remove_blacklist_dupes']))
+    { //###DdV TODO optimize this code a wee bit
+        if(isset($_REQUEST['remove_blacklist_dupes_ip']))
+            $type = "ip";
+        else
+            $type = "url";
+
+
+        set_time_limit(200);
+        //global $wpdb;
+
+        $list = $wpdb->get_results("SELECT `id`, `regex`, `regex_type` FROM `blacklist` WHERE `regex_type` = '$type' OR `regex_type` = 'regex-$type'");
+        ?>
+         <div class="updated"><p><form name="blacklist_remove_form" method="post">
+        <?php
+        echo "<p>" . __("Searching for duplicates in the blacklist:", 'spamkdomain') . "</p>";
+
+        echo "<ul>";
+        $start_time = time();
+        $total = count($list);
+
+        for($i = 0; $i < $total; $i++)
+        {
+            $regex1 = $list[$i]->regex;
+
+            if (empty($regex1))
+            {
+                echo "<li><input type=\"checkbox\" checked name=\"blacklist_remove_id[{$list[$j]->id}]\"> <i>Empty regex</i></li>";
+            }
+            elseif($list[$i]->regex_type == "regex-$type")
+            {
+                $regex1 = "/^" . $regex1 . "/";
+                for($j = 0; $j < $total; $j++)
+                {
+                    $regex2 = $list[$j]->regex ;
+                    if (($j != $i) && !empty($regex2))
+                    {
+                        if(($list[$j]->regex_type == "regex-$type") && ($regex1 == $regex2))
+                        {
+                            echo "<li><input type=\"checkbox\" checked name=\"blacklist_remove_id[{$list[$j]->id}]\"> <b>". ($list[$j]->regex) . "</b> <i>" .
+__("identical to regex") . " '" . ($list[$i]->regex) . "')</i></li>";
+                            $list[$j]->regex = "";
+                            $remove++;
+                        }
+                        elseif (preg_match($regex1, $regex2))
+                        {
+                            echo "<li><input type=\"checkbox\" checked name=\"blacklist_remove_id[{$list[$j]->id}]\"> <b>". ($list[$j]->regex) . "</b> <i>" .
+__("matched by") . " '" . ($list[$i]->regex) . "')</i></li>";
+                            $list[$j]->regex = "";
+                            $remove++;
+                        }
+                    }
+                }
+
+            }
+            else
+            {
+                for($j = $i; $j < $total; $j++)
+                {
+                    $regex2 = $list[$j]->regex ;
+                    if (($j != $i) && !empty($regex2) && ($list[$j]->regex_type != "regex-$type") && (stripos($regex1, $regex2) !== false))
+                    {
+                        $list[$j]->regex = "";
+                        $remove++;
+                    }
+                }
+            }
+
+        }
+
+    echo "</ul><p><i>". __("Duplicate search took ") . (time()-$start_time) . __(" seconds") . "</i></p>";
+    if ($remove)
+    {
+        echo "<p>" . __("Found "). $remove . " " . __('Redundant entries') . "</b>";
+?>
+    <p class="submit">
+        <input name="blacklist_remove_ids" type="submit" id="blacklist_remove_ids" value="<?php _e('Remove Checked Entries', 'spamkdomain') ?>" />
+    </p>
+<?php
+    }
+    else
+         _e('No Duplicates Found');
+?>
+    </form></p></div>
+<?php
+    }
+    if(isset($_REQUEST['delete_digest']))
+    {
+        $new_settings = spamk_get_settings('spamk_settings');
+        $new_settings['digest_message'] = "";
+        $new_settings['digest_count'] = 0;
+        $new_settings['skipped_count'] = 0;
+        spamk_update_option('spamk_settings', $new_settings);
+        echo '<div class="updated"><p><strong>' . __('Digest reset.', 'spamkdomain') . '</strong></p></div>';
+    }
+    elseif(isset($_REQUEST['reset_stats']))
+    {
+        $new_settings = spamk_get_settings('spamk_settings');
+        $new_settings['delspam'] = 0;
+        $new_settings['approved_cmts'] = 0;
+        $new_settings['moderate_spam'] = 0;
+        spamk_update_option('spamk_settings', $new_settings);
+        echo '<div class="updated"><p><strong>' . __('Statistics reset.', 'spamkdomain') . '</strong></p></div>';
+    }
+    elseif(isset($_POST['update_options']))
+    {
+        spamk_update_option('spamk_options',  $_POST['spamk_options']);
+
+        $new_settings = array_merge(spamk_get_settings('spamk_settings'), $_POST['spamk_settings']);
+        foreach($spamk_default_settings as $key => $val)
+            if (empty($new_settings[$key]))
+                $new_settings[$key] = $val;
+        spamk_update_option('spamk_settings', $new_settings);
+        echo '<div class="updated"><p><strong>' . __('Options updated.', 'spamkdomain') . '</strong></p></div>';
+    }
+    elseif(isset($_POST['confirm_ip_ban']))
+    {
+        $new_settings = spamk_get_settings('spamk_settings');
+        $new_settings['repeating_offenders'] = array();
+        spamk_update_option('spamk_settings', $new_settings);
+        echo '<div class="updated"><p><strong>' . __('IP bans confirmed.', 'spamkdomain') . '</strong></p></div>';
+    }
+    elseif(isset($_POST['moderate_blacklist']))
+    {
+        $add_urls = $add_ips = array();
+
+        if (isset($_POST['spamk_urls_check']))
+            foreach ($_POST['spamk_urls_check'] as $key => $val)
+            {
+                $url = $_POST['spamk_urls'][$key];
+                if (!empty($url) && !in_array($url, $add_urls))
+                    $add_urls[] = $url;
+            }
+
+        $orig = count($add_urls);
+        if ($orig != screen_blacklist_candidates($add_urls, "url"))
+            echo '<div class="updated"><p>' . __('Removed redundant URLs.', 'spamkdomain') . '</p></div>';
+
+        foreach ($add_urls as $url)
+            mysql_query("INSERT INTO blacklist (`regex`, `regex_type`) VALUES ('$url','url')");
+
+
+        if (isset($_POST['spamk_ips_check']))
+            foreach ($_POST['spamk_ips_check'] as $key => $val)
+            {
+                $ip = $_POST['spamk_ips'][$key];
+                if (!empty($ip) && !in_array($ip, $add_ips))
+                    $add_ips[] = $ip;
+            }
+
+        $orig = count($add_ips);
+        if ($orig != screen_blacklist_candidates($add_ips, "ip"))
+            echo '<div class="updated"><p>' . __('Removed redundant IP entries.', 'spamkdomain') . '</p></div>';
+
+        foreach ($add_ips as $ip)
+            mysql_query("INSERT INTO blacklist (`regex`, `regex_type`) VALUES ('$ip','ip')");
+
+        mysql_query("DELETE FROM `blacklist` WHERE `regex_type` = 'auto-ip' OR `regex_type` = 'auto-url'");
+
+        echo '<div class="updated"><p><strong>' . __('Blacklist DB updated.', 'spamkdomain') . '</strong></p></div>';
+    }
+    else
+    {
+        $tableindices = $wpdb->get_results("SHOW INDEX FROM {$wpdb->comments};");
+        $foundindex = false;
+        foreach($tableindices as $index)
+        {
+            if('spamk_fulltext' == $index->Key_name) {
+                $foundindex = true;
+                break;
+            }
+        }
+        if(!$foundindex)
+        {
+            $wpdb->query("ALTER  TABLE  `{$wpdb->comments}`  CHANGE  `comment_content`  `comment_content` TEXT NOT NULL"); // seems there's a bug that prevents from adding fulltext key to not non-null fields
+            $wpdb->query("ALTER TABLE `{$wpdb->comments}` ADD FULLTEXT KEY spamk_fulltext (comment_content)");
+        }
+
+        add_option('spamk_options', $default_options);
+        add_option('spamk_settings', $spamk_default_settings);
+                
+        $spamk_options = spamk_get_settings('spamk_options');
+        $spamk_settings = spamk_get_settings('spamk_settings');
+        if(!is_array($spamk_settings))
+            $spamk_settings = $spamk_default_settings;
+        if(!is_array($spamk_options))
+            $spamk_options = $default_options;
+
+        //###DdV add blacklist support (use same table if there)
+        // Using code from LaughingLizard's hack
+
+        if (time()  > ($spamk_settings['last_blacklist_update'] + $spamk_settings['blacklist_update_time']))
+        {
+            echo '<div class="updated"><p><strong>' . __('Auto-updating Blacklist Table.', 'spamkdomain') . '</strong></p>';
+            if(! $spamk_settings['created_blacklist_table'])
+                $spamk_settings['created_blacklist_table'] = spamk_fix_blacklist_table();
+
+            if (empty($spamk_settings['blacklist_url']))
+                $blacklist_url = $spamk_default_settings['blacklist_url'];
+            else
+                $blacklist_url = $spamk_settings['blacklist_url'];
+
+            spamk_update_option('spamk_settings', $spamk_settings);
+
+            if($spamk_settings['created_blacklist_table'])
+                download_blacklist_update($blacklist_url);
+
+            $spamk_settings = spamk_get_settings('spamk_settings');
+
+            echo '</div>';
+
+        }
+
+        if (empty($spamk_settings['blacklist_update_time']))
+            $spamk_settings['blacklist_update_time'] = $spamk_default_settings['blacklist_update_time'];
+
+        if (empty($spamk_settings['blacklist_url']))
+            $spamk_settings['blacklist_url'] = $spamk_default_settings['blacklist_url'];
+
+
+        spamk_update_option('spamk_options', $spamk_options);
+        spamk_update_option('spamk_settings', $spamk_settings);
+
+    }
+if (!function_exists('check_flag'))
+{
+    function check_flag($flagname, $allflags)
+    {
+        echo (in_array($flagname, $allflags) ? 'checked="checked"' : '');
+    }
+}
+
+
+    $spamk_options = spamk_get_settings('spamk_options');
+    $spamk_settings = spamk_get_settings('spamk_settings');
+    if(!is_array($spamk_settings))
+        $spamk_settings = $spamk_default_settings;
+    if(!is_array($spamk_options))
+        $spamk_options = $default_options;
+        
+    // This code cleans-up the mess created by a WP bug and the add_option function
+	if (empty($wpdb->options))
+	{
+		global $tableoptions;
+		$wpdb->options = $tableoptions;
+	}
+
+    if ($wpdb->get_var("SELECT COUNT(*) FROM `". $wpdb->options . "` WHERE `option_name` IN ('save_comment_max_links', 'save_comments_notify', 'save_moderation_notify', 'save_moderation_keys', 'spamk_saved_options')"))
+    {
+    	$wpdb->query("DELETE FROM `". $wpdb->options . "` WHERE `option_name` IN ('save_comment_max_links', 'save_comments_notify', 'save_moderation_notify', 'save_moderation_keys', 'spamk_saved_options')");
+	    echo '<div class="updated"><p>' . __('Fixed WP/SK bug (erased redundant option entries in the table).', 'spamkdomain') . '</p></div>';
+    }
+
+//###DdV TODO: would be nice to check that 'home' is correctly set (e.g. test the current referrer against it on the admin page) so it doesn't flag bad_referrer by mistake
+
+if (spamk_option_set('captcha_test') && !is_writable(kCaptchaTempFolder))
+{
+    echo '<div class="updated"><p><strong>' . __('WARNING: You forgot to make the <i>captcha_temp</i> directory writable. Please read the install instructions and chmod this folder 777 or make sure you disable the Captcha check in the options below.', 'spamkdomain') . '</strong></p></div>';
+}
+
+$in_moderation = $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->comments}` WHERE `comment_approved` = '0'");
+
+if ($spamk_settings['delspam'] || $spamk_settings['approved_cmts'] || $spamk_settings['moderate_spam'])
+{
+?>
+<div class="wrap" id="current_stats">
+    <h2><?php _e("Current Stats", 'spamkdomain') ?></h2>
+    <form name="stats_form" method="post">
+    <ul>
+        <?php
+        if ($spamk_settings['delspam'])
+        {
+        ?>
+        <li>
+            <?php echo __('Deleted Spam: ', 'spamkdomain') .  $spamk_settings['delspam'] . __(' (see current <a href="#spamk_digest">digest</a>.)', 'spamkdomain'); ?>
+        </li>
+        <?php
+        }
+        if ($spamk_settings['moderate_spam'])
+        {
+        ?>
+        <li>
+            <?php _e('Moderated Spam: ', 'spamkdomain') ?><?php echo $spamk_settings['moderate_spam']; ?> <?php
+if($in_moderation)
+            if(! $insert_html)
+                echo "(" . __('currently ', 'spamkdomain') . "<a href=\"moderation.php\">" . "$in_moderation " . (($in_moderation > 1) ? __('comments', 'spamkdomain') : __('comment', 'spamkdomain')) . "</a> " . __('sitting in moderation', 'spamkdomain') . ")";
+            else
+                echo "(" . __('currently ', 'spamkdomain') . "<a href=\"../../wp-admin/moderation.php\">" . "$in_moderation " . (($in_moderation > 1) ? __('comments', 'spamkdomain') : __('comment', 'spamkdomain')) . "</a> " . __('sitting in moderation', 'spamkdomain') . ")";
+  ?>
+        </li>
+        <?php
+        }
+        if ($spamk_settings['approved_cmts'])
+        {
+        ?>
+        <li>
+        <?php
+            if(! $insert_html)
+                 echo __('Approved Comments: ', 'spamkdomain').  $spamk_settings['approved_cmts'] . " (<a href=\"edit-comments.php\">". __("go to Comment Panel") . "</a>)";
+            else
+                echo __('Approved Comments: ', 'spamkdomain').  $spamk_settings['approved_cmts'] . " (<a href=\"../../wp-admin/edit-comments.php\">". __("go to Comments Panel") . "</a>)";
+        ?>
+        </li>
+        <?php
+        }
+        ?>
+    </ul>
+    <p class="submit">
+        <input name="reset_stats" type="submit" id="reset_stats" value="<?php _e('Reset Statistics', 'spamkdomain') ?>" />
+    </p>
+</form>
+<?php
+}
+elseif ($in_moderation)
+{
+    echo "<div class=\"wrap\" id=\"moderation_notice\">$in_moderation " . (($in_moderation >1)? __('comments</a> have been') : __('comment</a> has been')). __(' moderated <i>outside</i> of Spam Karma (other plugin or WP built-in filters). ', 'spamkdomain');
+    if(! $insert_html)
+        echo __('<i><a href="moderation.php">Go to moderation panel</a></i>', 'spamkdomain') . "</div>";
+    else
+        echo __('<i><a href="../../wp-admin/moderation.php">Go to moderation panel</a></i>', 'spamkdomain') . "</div>";
+}
+
+?>
+</div>
+    <?php
+    if($spamk_settings['created_blacklist_table'])
+    {
+        $ip_waiting = $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex_type` = 'auto-ip'");
+        $url_waiting = $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex_type` = 'auto-url'");
+    }
+    if ($spamk_settings['repeating_offenders'] && count($spamk_settings['repeating_offenders']))
+        $bad_guys = true;
+
+    if ($bad_guys || $ip_waiting || $url_waiting)
+    {
+
+    ?>
+    <div class="wrap">
+    <h2><?php _e("Blacklist Maintenance", 'spamkdomain') ?></h2>
+    <?php
+        if ($bad_guys)
+        {
+        ?>
+            <fieldset class="options">
+            <legend><?php _e('Bad Guys Hall of Shame', 'spamkdomain') ?></legend>
+            The following IPs are repeating offenders (they were spotted more than once trying to post comment spam), they have been automatically added to the permanent ban list:
+            <ul>
+            <?php
+
+                if ($pos = strpos($_SERVER['REQUEST_URI'], "&"))
+                    $script_url = substr($_SERVER['REQUEST_URI'], 0, $pos);
+                else
+                    $script_url = $_SERVER['REQUEST_URI'];
+
+                foreach($spamk_settings['repeating_offenders'] as $id => $this_ip)
+                    echo "<li>" . $this_ip . " <i>(<a href=\"". $script_url . "&blacklist_remove_ids&blacklist_remove_id[$id]=true\">remove ban</a>)</i></li>";
+            ?>
+            </ul>
+            <form name="form_confirm_ip_ban" method="post">
+            <p class="submit">
+            <input name="confirm_ip_ban" type="submit" id="confirm_ip_ban" value="<?php _e('Confirm IP Ban', 'spamkdomain') ?>" />
+            </p>
+            </form>
+            </fieldset>
+    <?php
+        }
+
+        if ( ($ip_waiting || $url_waiting))
+        {
+        ?>
+            <form name="form_moderate_blacklist" id="form_moderate_blacklist" method="post">
+            <fieldset class="options">
+            <legend><?php _e('Blacklist Moderation:', 'spamkdomain') ?></legend>
+                    <label for="moderate_blacklist">
+                    <?php _e("These entries were automatically added to the blacklist, please edit as necessary, uncheck the ones you do not want to keep and submit the form to make the ban permanent:") ?></label>
+            <ul>
+                <?php
+                if ($ip_waiting)
+                {
+                    $ip_waiting_list = $wpdb->get_results("SELECT * FROM `blacklist` WHERE `regex_type` = 'auto-ip'");
+                    $i = 0;
+                ?>
+                <li>
+                    <label for="moderate_ips">
+                    <?php _e('Recently added IPs:') ?></label>
+                    <ul>
+                        <?php
+                        foreach ($ip_waiting_list as $this_entry)
+                        {
+                        ?>
+                        <li>
+                            <input type="checkbox" name="spamk_ips_check[<?php echo $i; ?>]" type="text" id="spam_ips_check_<?php echo $i; ?>" value="<?php echo $i; ?>" checked> <input name="spamk_ips[]" type="text" id="email_deleted_digest" value="<?php echo $this_entry->regex; ?>" size="<?php echo min(70, strlen($this_entry->regex) + 5); ?>" />
+                        </li>
+                        <?php
+                            $i++;
+                        }
+                        ?>
+                    </ul>
+                </li>
+                <?php
+                }
+
+                if ($url_waiting)
+                {
+                    $res = $wpdb->get_results("SELECT * FROM `blacklist` WHERE `regex_type` = 'auto-url'");
+                    $i = 0;
+
+                    foreach($res as $rec)
+                        $url_waiting_list[] = str_replace("www.", "", $rec->regex);
+                    $url_waiting_list = array_unique($url_waiting_list);
+                ?>
+                <li>
+                    <label for="moderate_urls">
+                    <?php _e('Recently added URLs:') ?></label>
+                    <ul>
+                        <?php
+                        foreach ($url_waiting_list as $this_entry)
+                        {
+                        ?>
+                        <li>
+                            <input type="checkbox" name="spamk_urls_check[<?php echo $i; ?>]" type="text" id="spam_urls_check_<?php echo $i; ?>" value="<?php echo $i; ?>" checked> <input name="spamk_urls[]" type="text" id="email_deleted_digest" value="<?php echo $this_entry; ?>" size="<?php echo min(70, strlen($this_entry) + 5); ?>" />
+                        </li>
+                        <?php
+                            $i++;
+                        }
+                        ?>
+                    </ul>
+                </li>
+                <?php
+                }
+                ?>
+            </ul>
+            <p><i><?php _e('Note: do not enter regex in these fields...', 'spamkdomain')?></i></p>
+			<p><a href="javascript:;" onclick="checkAll(document.getElementById('form_moderate_blacklist')); return false; ">Invert Checkbox Selection</a></p>
+            <p class="submit">
+            <input name="moderate_blacklist" type="submit" id="moderate_blacklist" value="<?php _e('Update Blacklist DB', 'spamkdomain') ?>" />
+            </p>
+        </fieldset>
+        </form>
+        <?php
+        }
+        ?>
+    </div>
+    <?php
+    }
+    ?>
+<div class="wrap">
+    <h2><?php _e("Spam Karma Options", 'spamkdomain') ?></h2>
+    <form name="general_setting_form" method="post">
+    <fieldset class="options">
+        <legend><?php _e('General Setting', 'spamkdomain') ?></legend>
+        <ul>
+            <li>
+                <label for="flexibility">By default Spam Karma will do its best to identify spam and treat it depending on the level of certainty by the end of all the tests and using the following rules (simplified a lot here):
+                <ul>
+                <li>Unmistakable spam is deleted (no moderation).</li>
+                <li>Ambiguous comments are given a Captcha test and eventually moderated, if still questionable.</li>
+                <li>Good comments are displayed directly</li>
+                </ul></label>
+                <label for="flexibility">
+                Set the overall treatment algorithm to be <select id="flexibility" name="spamk_settings[flexibility]">
+                <?php
+                $levels = array("Very lenient" => +3, "Lenient" => +1, "Normal" => 0, "Strict" => -1, "Very strict" => -3);
+                foreach ($levels as $caption => $level)
+                    if ($level == $spamk_settings['flexibility'])
+                        echo "<option value=\"$level\" selected>$caption</option>";
+                    else
+                        echo "<option value=\"$level\">$caption</option>";
+                ?>
+                </select>
+                </label>
+            </li>
+        </ul>
+    </fieldset>
+    <fieldset class="options">
+        <legend><?php _e('Miscellaneous Options', 'spamkdomain') ?></legend>
+        <ul>
+            <li>
+                <label for="email_deleted">
+                <input name="spamk_options[]" type="checkbox" id="email_deleted" value="email_deleted" <?php check_flag('email_deleted', $spamk_options); ?> />
+                <?php _e('Email notices to the admin when comments are deleted.', 'spamkdomain') ?></label>
+                <ul>
+                    <li>
+                        <label for="email_deleted_digest">
+                        <input name="spamk_options[]" type="checkbox" id="email_deleted_digest" value="email_deleted_digest" <?php check_flag('email_deleted_digest', $spamk_options); ?> />
+                        <?php _e('Only send digest every', 'spamkdomain') ?></label>
+                        <input name="spamk_settings[email_deleted_digest_size]" type="textbox" id="email_deleted_digest_size" value="<?php echo $spamk_settings['email_deleted_digest_size']; ?>" size="3" />
+                        <label for="email_deleted_digest">
+                        <?php _e('deleted spams.', 'spamkdomain') ?></label>
+                    </li>
+                    <li>
+                        <label for="digest_threshold">
+                        <input name="spamk_options[]" type="checkbox" id="digest_threshold" value="digest_threshold" <?php check_flag('digest_threshold', $spamk_options); ?> />
+                        <?php _e('Skip spam with a karma below: -', 'spamkdomain') ?></label>
+                        <input name="spamk_settings[digest_threshold_value]" type="textbox" id="digest_threshold_value" value="<?php echo $spamk_settings['digest_threshold_value']; ?>" size="3" />
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <label for="include_headers_fail">
+                <input name="spamk_options[]" type="checkbox" id="include_headers_fail" value="include_headers_fail" <?php check_flag('include_headers_fail', $spamk_options); ?> />
+                <?php _e('Add the server variables to a comment that is not approved.  (For diagnostic use only.)', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="include_request_fail">
+                <input name="spamk_options[]" type="checkbox" id="include_request_fail" value="include_request_fail" <?php check_flag('include_request_fail', $spamk_options); ?> />
+                <?php _e('Add the request headers to a comment that is not approved.  (For diagnostic use only.)', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="include_execution_time">
+                <input name="spamk_options[]" type="checkbox" id="include_execution_time" value="include_execution_time" <?php check_flag('include_execution_time', $spamk_options); ?> />
+                <?php _e('Add execution time to a comment that is not approved.', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="filter_trackbacks">
+                <input name="spamk_options[]" type="checkbox" id="filter_trackbacks" value="filter_trackbacks" <?php check_flag('filter_trackbacks', $spamk_options); ?> />
+                <?php _e('Try to filter TrackBack spam (experimental).', 'spamkdomain') ?></label>
+            </li>
+        </ul>
+    </fieldset>
+    <fieldset class="options">
+        <legend><?php _e('Advanced Options <em>(leave to default values if you are not sure)</em>', 'spamkdomain') ?></legend>
+        <ul>
+            <li>
+                <label for="wp-blacklist">
+                <input name="spamk_options[]" type="checkbox" id="wp-blacklist" value="wp-blacklist" <?php check_flag('wp-blacklist', $spamk_options); ?> />
+                <?php _e('Use <em>wp-blacklist</em>-style check.', 'spamkdomain') ?></label>
+                <ul>
+                    <li>
+                        <label for="use_rbl">
+                    <input name="spamk_options[]" type="checkbox" id="use_rbl" value="use_rbl" <?php check_flag('use_rbl', $spamk_options); ?> />
+                    <?php _e('Use Realtime Blacklist (RBL) Servers.', 'spamkdomain') ?></label>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <label for="snowball">
+                <input name="spamk_options[]" type="checkbox" id="snowball" value="snowball" <?php check_flag('snowball', $spamk_options); ?> />
+                <?php _e('Use <em>Snowball Effect</em>-style detection', 'spamkdomain') ?></label> (<?php _e("triggered after:")?> <input name="spamk_settings[trigger]" type="textbox" id="spamk_trigger" value="<?php echo $spamk_settings['trigger']; ?>" size="3" /> <?php _e("comments") ?>).
+
+            </li>
+            <li>
+                <label for="hand_typed_entities">
+                <input name="spamk_options[]" type="checkbox" id="hand_typed_entities" value="hand_typed_entities" <?php check_flag('hand_typed_entities', $spamk_options); ?> />
+                <?php _e('Penalize HTML entities (such as <code>&amp;#107;</code>).', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="too_many_links">
+                <input name="spamk_options[]" type="checkbox" id="too_many_links" value="too_many_links" <?php check_flag('too_many_links', $spamk_options); ?> />
+                <?php _e('Penalize comments with more than', 'spamkdomain') ?></label> <input name="spamk_settings[link_trigger]" type="textbox" id="spamk_trigger" value="<?php echo $spamk_settings['link_trigger']; ?>" size="3" /> <?php _e("links") ?>.
+            </li>
+            <li>
+                <label for="no_via_header">
+                <input name="spamk_options[]" type="checkbox" id="no_via_header" value="no_via_header" <?php check_flag('no_via_header', $spamk_options); ?> />
+                <?php _e('The server request must not contain the <code>HTTP_VIA</code> header.', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="good_referer">
+                <input name="spamk_options[]" type="checkbox" id="good_referer" value="good_referer" <?php check_flag('good_referer', $spamk_options); ?> />
+                <?php _e('The page viewed before the comment was submitted (referer) must be on this site <em>(This option is now deprecated: use OSA form instead)</em>.', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="discussion_delete">
+                <input name="spamk_options[]" type="checkbox" id="discussion_delete" value="discussion_delete" <?php check_flag('discussion_delete', $spamk_options); ?> />
+                <?php _e('Take in account moderation criteria set on the <a href="options-discussion.php">Discussion</a> page.', 'spamkdomain') ?></label>
+            </li>
+            <li>
+                <label for="old_posts">
+                <input name="spamk_options[]" type="checkbox" id="old_posts" value="old_posts" <?php check_flag('old_posts', $spamk_options); ?> />
+                <?php _e('Stricter on comments made on posts older than', 'spamkdomain') ?></label>
+                <input name="spamk_settings[recent]" type="textbox" id="spamk_recent" value="<?php echo $spamk_settings['recent']; ?>" size="3" />
+                <label for="spamk_recent">
+                <?php _e('days.', 'spamkdomain') ?></label>
+                <ul>
+                    <li>
+                        <label for="close_form">
+                    <input name="spamk_options[]" type="checkbox" id="close_form" value="close_form" <?php check_flag('close_form', $spamk_options); ?> />
+                    <?php _e('Don\'t display the comment form for old posts.', 'spamkdomain') ?></label>
+                    </li>
+                    <li>
+                        <label for="delete_closed">
+                    <input name="spamk_options[]" type="checkbox" id="delete_closed" value="delete_closed" <?php check_flag('delete_closed', $spamk_options); ?> />
+                    <?php _e('<em>Delete</em> comments that are submitted on old posts rather than moderate them.', 'spamkdomain') ?></label>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <label for="admin_comment">
+                <input name="spamk_options[]" type="checkbox" id="admin_comment" value="admin_comment" <?php check_flag('admin_comment', $spamk_options); ?> />
+                <?php _e('Automatically approve comment submitted by a logged-in user of at least user level: ', 'spamkdomain') ?></label>
+                <input name="spamk_settings[minlevel]" type="textbox" id="spamk_approve_level" value="<?php echo $spamk_settings['minlevel']; ?>" size="3" />
+            </li>
+            <li>
+                <label for="captcha_test">
+                <input name="spamk_options[]" type="checkbox" id="captcha_test" value="captcha_test" <?php check_flag('captcha_test', $spamk_options); ?> />
+                <?php _e('If comment looks ambiguous, use a Captcha as a backup check. <em>(Important: you should run the <a href="', 'spamkdomain');           
+				 if(! $insert_html)
+               		echo "../wp-content/spam-karma/captcha_test.php";
+         	   else
+					echo "../spam-karma/captcha_test.php";
+				_e('">Captcha test page</a> once and ensure it is displayed properly before enabling this option)</em>.', 'spamkdomain') ?></label>
+                <ul>
+                    <li>
+                        <label for="email_moderation">
+                    <input name="spamk_options[]" type="checkbox" id="email_moderation" value="email_moderation" <?php check_flag('email_moderation', $spamk_options); ?> />
+                    <?php _e('Provide alternative email auto-moderation.', 'spamkdomain') ?></label>
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <label for="osa_enabled">
+                <input name="spamk_options[]" type="checkbox" id="osa_enabled" value="osa_enabled" <?php check_flag('osa_enabled', $spamk_options); ?> />
+                <?php _e('Enable OSA (inserts hidden fields in comment form). <i>Note: you no longer need to edit the file manually to use this option</i>', 'spamkdomain') ?></label>
+            </li>
+            <ul>
+                <li>
+                    <label for="same_remote_ip">
+                    <input name="spamk_options[]" type="checkbox" id="same_remote_ip" value="same_remote_ip" <?php check_flag('same_remote_ip', $spamk_options); ?> />
+                    <?php _e('The comment must be made from the same IP address as what requested the comment form.', 'spamkdomain') ?></label>
+                </li>
+                <li>
+                    <label for="within_time">
+                    <input name="spamk_options[]" type="checkbox" id="within_time" value="within_time" <?php check_flag('within_time', $spamk_options); ?> />
+                    <?php _e('The comment must be made within', 'spamkdomain') ?></label>
+                    <label for="spamk_maxtime">
+                    <input name="spamk_settings[maxtime]" type="textbox" id="spamk_maxtime" value="<?php echo $spamk_settings['maxtime']; ?>" size="3" />
+                    <?php _e('minutes.', 'spamkdomain') ?></label>
+                </li>
+                <li>
+                    <label for="atleast_time">
+                    <input name="spamk_options[]" type="checkbox" id="atleast_time" value="atleast_time" <?php check_flag('atleast_time', $spamk_options); ?> />
+                    <?php _e('The commenter must wait at least', 'spamkdomain') ?></label>
+                    <label for="spamk_mintime">
+                    <input name="spamk_settings[mintime]" type="textbox" id="spamk_mintime" value="<?php echo $spamk_settings['mintime']; ?>" size="3" />
+                    <?php _e('seconds before submitting the comment.', 'spamkdomain') ?></label>
+                </li>
+            </ul>
+        </ul>
+    </fieldset>
+    <p class="submit">
+        <input type="submit" name="update_options" value="<?php _e('Update Options') ?>" />
+    </p>
+
+</form>
+</div>
+<div class="wrap" id="spamk_blacklist_mgt">
+    <h2><?php _e("Blacklist Management", 'spamkdomain') ?></h2>
+    <fieldset class="options">
+        <legend><?php _e("Blacklist Updates", 'spamkdomain') ?></legend>
+    <form name="blacklist_dupes_form" method="post">
+        <ul>
+        <li><input name="blacklist_auto_update" type="checkbox" id="blacklist_auto_update" <?php if($spamk_settings['blacklist_update_time'] > 0) echo "checked" ?> /> <label for="blacklist_update_time"><?php _e("Automatically update Blacklist every", 'spamkdomain') ?></label> <input type="text" name="blacklist_update_time" value="<?php echo ceil($spamk_settings['blacklist_update_time'] / (3600 * 24)) ?>" size="2"> <label for="blacklist_update_time"><?php _e("day(s).", 'spamkdomain') ?></label></li>
+        <li><label for="blacklist_url"><?php _e("Remote Blacklist URL:", 'spamkdomain') ?></label>
+        <input type="text" name="blacklist_url" value="<?php echo $spamk_settings['blacklist_url'] ?>" size="60"> </li>
+</ul>
+
+    <p class="submit">
+        <input name="update_blacklist_options" type="submit" id="update_blacklist_options" value="<?php _e('Update Blacklist Options', 'spamkdomain') ?>" />
+    </p>
+    <p class="submit" style="text-align:center;">
+        <input name="update_blacklist" type="submit" id="update_blacklist" value="<?php _e('Update Blacklist', 'spamkdomain') ?>" />
+    </p>
+    </form>
+    </fieldset>
+
+    <fieldset class="options">
+        <legend><?php _e("Add Entries", 'spamkdomain') ?></legend>
+    <ul>
+    <li><form name="blacklist_insert_url_form" method="post">
+    <label for="blacklist_insert_url"><?php _e("Add URL") ?>: </label>
+        <input name="blacklist_insert_url" type="text" id="blacklist_insert_url" value="" size="20" /> <input name="blacklist_insert_url_btn" type="submit" id="blacklist_insert_url_btn" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </li>
+    <li><form name="blacklist_insert_ip_form" method="post">
+    <label for="blacklist_insert_ip"><?php _e("Add IP") ?>: </label>
+        <input name="blacklist_insert_ip" type="text" id="blacklist_insert_ip" value="" size="20" /> <input name="blacklist_insert_ip_btn" type="submit" id="blacklist_insert_ip_btn" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </li>
+    <li><form name="blacklist_insert_regex-url_form" method="post">
+    <label for="blacklist_insert_regex-url"><?php _e("Add URL Regex") ?>: </label>
+        <input name="blacklist_insert_regex-url" type="text" id="blacklist_insert_regex-url" value="" size="20" /> <input name="blacklist_insert_regex-url_btn" type="submit" id="blacklist_insert_regex-url_btn" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </li>
+    <li><form name="blacklist_insert_rbl_form" method="post">
+    <label for="blacklist_insert_rbl"><?php _e("Add RBL Server") ?>: </label>
+        <input name="blacklist_insert_rbl" type="text" id="blacklist_insert_rbl" value="" size="20" /> <input name="blacklist_insert_rbl_btn" type="submit" id="blacklist_insert_rbl_btn" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </li>
+    </ul>
+    </fieldset>
+
+
+    <fieldset class="options">
+        <legend><?php _e("Remove Entries", 'spamkdomain') ?></legend>
+    <ul>
+    <li><form name="blacklist_remove_url_form" method="post">
+    <label for="blacklist_remove_url_val"><?php _e("Remove URL ban") ?>: </label>
+        <input name="blacklist_remove_url_val" type="text" id="blacklist_remove_url_val" value="" size="20" /> <input name="blacklist_remove_url" type="submit" id="blacklist_remove_url" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </li>
+    <li><form name="blacklist_remove_ip_form" method="post"><label for="blacklist_remove_ip_val"><?php _e("Remove IP ban") ?>: </label>
+        <input name="blacklist_remove_ip_val" type="text" id="blacklist_remove_ip_val" value="<?php echo $_SERVER['REMOTE_ADDR'] ?>" size="20" /> <input name="blacklist_remove_ip" type="submit" id="blacklist_remove_ip" value="<?php _e('Go...', 'spamkdomain') ?>" /></form>
+    </form></li>
+    <li><form name="blacklist_remove_rbl_form" method="post"><label for="blacklist_remove_rbl_val"><?php _e("Remove RBL Server") ?>: </label>
+        <input name="blacklist_remove_rbl_val" type="text" id="blacklist_remove_rbl_val" value="" size="20" /> <input name="blacklist_remove_rbl" type="submit" id="blacklist_remove_rbl" value="<?php _e('Go...', 'spamkdomain') ?>" />
+    </form></li>
+    <li><form name="blacklist_dupes_form" method="post">
+    <label for="remove_blacklist_dupes_ip"><?php _e("Clean duplicates") ?> <i>(<?php _e("Note: can up to a few minutes to complete", 'spamkdomain') ?>)</i></label>
+    <p class="submit" style="text-align:center;">
+        <input type="hidden" name="remove_blacklist_dupes" value="true">
+        <input name="remove_blacklist_dupes_ip" type="submit" id="remove_blacklist_dupes_ip" value="<?php _e('Remove Duplicate IPs', 'spamkdomain') ?>" />
+        <input name="remove_blacklist_dupes_url" type="submit" id="remove_blacklist_dupes_url" value="<?php _e('Remove Duplicate URLs', 'spamkdomain') ?>" />
+    </p>
+    </form></li>
+    <li><form name="blacklist_reset_form" method="post" onsubmit="javascript:return confirm('<?php _e("Are you SURE you want to empty the whole Blacklist table?") ?>');">
+    <label for="reset_blacklist"><?php _e("Reset blacklist:", 'spamkdomain') ?></label>
+    <p class="submit" style="text-align:center;">
+        <input name="reset_blacklist" type="submit" id="reset_blacklist" value="<?php _e('Reset Blacklist', 'spamkdomain') ?>" />
+    </p>
+    </form></li></ul>
+    </fieldset>
+
+</div>
+<div class="wrap" id="spamk_digest">
+    <h2><?php _e("Current Digest", 'spamkdomain') ?></h2>
+    <form name="form2" method="post">
+    <ul>
+        <li>
+            <?php _e('Deleted Spam: ', 'spamkdomain') ?><?php echo (int)$spamk_settings['delspam']; ?>.
+        </li>
+        <?php
+        if($spamk_settings['skipped_count'])
+        {
+        ?>
+        <li>
+            <?php _e('Skipped (Karma too low): ', 'spamkdomain') ?><?php echo (int)$spamk_settings['skipped_count']; ?>.
+        </li>
+        <?php
+        }
+        ?>
+        <li>
+            <?php _e('Digest in progress ('. $spamk_settings['digest_count'] .' out of '.  $spamk_settings['email_deleted_digest_size'] .'): ', 'spamkdomain') ?>
+            <ul>
+            <?php echo nl2br(str_replace(array("=+", "+=\n"), array("<li>","</li>"),$spamk_settings['digest_message'])); ?>
+            </ul>
+        </li>
+    </ul>
+    <p class="submit">
+        <input name="delete_digest" type="submit" id="delete_digest" value="<?php _e('Reset Digest', 'spamkdomain') ?>" />
+    </p>
+</form>
+</div>
+<?php
+    if ($insert_html)
+    {
+    ?>
+    </body>
+    </html>
+    <?php
+    }
+}
+else
+{
+
+	function spamk_trackback_post($trackback_id)
+	{
+		if (spamk_option_set('filter_trackbacks'))
+			spamk_comment_post($trackback_id, true);
+	}
+	
+    function spamk_comment_post($comment_ID, $retro_treatment = false)
+    {
+		global $spamk_default_settings;
+    	$spamk_settings = spamk_get_settings('spamk_settings');
+        if(! is_array($spamk_settings))
+        	$spamk_settings = $spamk_default_settings;
+        
+        if(spamk_option_set('include_execution_time'))
+            $start_time = microtime(true);
+
+        global $open_meta_spamk, $close_meta_spamk, $wp_13;
+
+        $skip_ok = 10;
+        $skip_kill = -10;
+
+        $expiration_delay = 3600; // captcha expire after one hour
+        global $wpdb, $now_gmt;
+
+        $evaluate_karma = true; // if false: will skip karma checks
+        $karma_cmts = array();
+        
+	   $comment_rec = $wpdb->get_row("SELECT * FROM $wpdb->comments WHERE `comment_ID` = '$comment_ID' LIMIT 1");
+
+		if (! $comment_rec->comment_ID)
+			return;
+
+		$comment = stripslashes($comment_rec->comment_content);
+		global $approved;
+		$approved = $comment_rec->comment_approved;
+		$url =  stripslashes($comment_rec->comment_author_url);
+		$user_ip =  $comment_rec->comment_author_IP;
+		$email =  stripslashes($comment_rec->comment_author_email);
+		$author =  stripslashes($comment_rec->comment_author);
+		$comment_post_ID = $comment_rec->comment_post_ID;
+		if($comment_rec->comment_type == "trackback" || $comment_rec->comment_type == "pingback")
+		{
+			$is_pingtrack = true;
+			$retro_treatment = true;
+		}
+		
+
+
+        if ($retro_treatment)
+        {
+			if ($is_pingtrack)
+           {
+                $evaluate_karma = true;
+				$karma = 0; // test
+				$karma_cmts[] = "Moderating ". $comment_rec->comment_type . " spam.";
+
+           }
+           elseif (preg_match("/^{$open_meta_spamk}\\s*KARMA:\\s*([^\\s]*)\\s*{$close_meta_spamk}$/m", $comment, $matches))
+            {
+                $evaluate_karma = false;
+
+                $karma = $matches[1];
+
+                if (preg_match("/^{$open_meta_spamk}\\s*CAPTCHA:sent-(.)-times:(.*){$close_meta_spamk}$/m", $comment, $matches))
+                {
+                    if ($matches[2] < current_time('timestamp', 1))
+                    {
+                        $comment = preg_replace("/^({$open_meta_spamk}\\s*CAPTCHA:.*{$close_meta_spamk})\$/m", "", $comment);
+                        preg_match_all("/^{$open_meta_spamk}\\s*(.*)\\s*{$close_meta_spamk}\$/m", $comment, $matches);
+                        $karma_cmts = $matches[1];
+
+                        $comment = preg_replace("/^({$open_meta_spamk}.*{$close_meta_spamk}\\n?)\$/m", "", $comment);
+
+                        //echo "expired: scaling again<br/>";
+                        //echo "reset comment: ". $comment = preg_replace("/^(spamk\\s*:.*)$/m", "", $comment);
+                        //echo "array cnt: <pre> ". print_r($karma_cmts, true) . "</pre>";
+                        $karma_cmts[] = "Captcha expired, lowering karma and scaling again...";
+
+                        $spamk_settings['moderate_spam'] --;
+
+                        $karma -= 2;
+                    }
+                    else
+                    {
+                        //echo "not expired<br/>";
+                        return; // not expired yet, leave it alone
+                    }
+                }
+                else
+                {
+                    //echo "Already filtered, no valid captcha<br/>";
+                    return; // it's been moderated and got no captcha, should leave alone
+                }
+            }
+            else // never been checked? huh... well, let's do it now :D
+            {
+                $evaluate_karma = true;
+
+				$karma = -1; // it's been moderated, so let's assume it's not a nicey one to start with...
+				$karma_cmts[] = "Caught moderated comment that never went through Spam Karma: running it now...";
+
+            }
+        }
+        else
+        {
+            $user_ip = $_SERVER['REMOTE_ADDR'];
+
+            $comment = preg_replace("/^({$open_meta_spamk}.*$)/m", "", $comment); // no cheating
+
+            if (! $wp_13 && spamk_option_set('spamk_saved_options'))
+            {
+            	$spamk_options = spamk_get_settings('spamk_options');
+                update_option('comments_notify',  $spamk_options['save_comments_notify']);
+                update_option('moderation_notify', $spamk_options['save_moderation_notify']);
+                update_option('moderation_keys', $spamk_settings['save_moderation_keys']);
+                update_option('comment_max_links', $spamk_settings['save_comment_max_links']);
+                $spamk_options['spamk_saved_options'] = false;
+                spamk_update_option('spamk_options', $spamk_options);
+            }
+            $karma = 0;
+        }
+
+
+
+        $esc_url = mysql_escape_string($url);
+        $esc_email = mysql_escape_string($email);
+        $esc_comment = mysql_escape_string($comment);
+
+            //### DdV
+            // basically we leave out any basic, non linkable text minimizing chances of false positives (since a good 90% of comments are made only of that).
+
+            // harvest links found in comment
+
+            //DdV: this regex not working :(
+            $regex = '/([a-z]{3,5}:\\/\\/|href=\\\\?"?\'?|www\\.|http:\\/\\/)+([^\\\\"\'>\\s]*)/im';
+            preg_match_all($regex, $comment, $matches);
+
+            $match_urls = $matches[2];
+            if(! empty($url))
+                $match_urls[] = str_replace(array("http://", "http://www."), "", $url);
+
+            //TODO:
+            // harvest title and linked text
+            // $regex = "/\stitle=\"([^\\\"]*)\"/im";
+            // preg_match_all($regex, $details->comment_content, $matches);
+            // /<a(.*)(href=["']?(.*)["' ])?(.*)(title=["']?(.*)["' ])?(.*)(href=["']?(.*)["' ])?(.*)>/s
+
+
+        if ($evaluate_karma)
+        {
+
+            //Check user level
+            if (($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('admin_comment'))
+            {
+
+                // if $user_level == 0, karma+= 2 : can assume that spammers won't go to the length of registering, even if they could...
+                // if $user_level > 1, karma+= 5 : registered user with posting privilleges: not a spammer (that would also cover the blog author, no need to check for user_login)
+                global $user_level;
+                get_currentuserinfo();
+                if (isset($user_level) && $user_level > 0)
+                {
+                    if($user_level >= max ($spamk_settings['minlevel'], 1))
+                        $karma = $skip_ok;
+                    elseif($user_level == 1)
+                        $karma += 2;
+                    elseif($user_level > 1)
+                        $karma += 5;
+
+                    $karma_cmts[] = "user_level: $user_level";
+                }
+            }
+
+            //Look for "hand-typed" HTML entities
+
+            if (!$is_pingtrack && ($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('hand_typed_entities'))
+            {
+                //###DdV
+                // karma -= number of matches in urls, email, author etc (i.e.: 3 entities => -= 3)
+                // karma -= 0.5 number of matches in regular content
+
+                $matches = $strong_matches = 0;
+                foreach($match_urls as $line)
+                    $strong_matches += preg_match_all('|&#[0-9]{1,5};|', $line, $junk);
+
+                $strong_matches += preg_match_all('|&#[0-9]{1,5};|', $author . "\n" . $email, $junk);
+
+                $matches += preg_match_all('|&#[0-9]{1,5};|', "{$author}\n{$email}\n{$url}\n{$comment}", $foobar); // urls will be counted twice
+                if ($matches + $strong_matches)
+                {
+                    $karma_cmts[] = "$matches hand-typed entities found" . (($strong_matches)? " ($strong_matches in sensitive field).": ".");
+                    $karma -= $matches + 2*$strong_matches;
+                }
+            }
+
+
+            //###DdV
+            // karma -= 2 (not very reliable: large chances of false positives... many offices access through proxies...)
+            if (!$retro_treatment && ($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('no_via_header') && (isset($_SERVER['HTTP_VIA'])))
+            {
+                $karma -= 2;
+                $karma_cmts[] = 'Used HTTP_VIA header.';
+            }
+
+            //###DdV
+            // karma -= 6 high false-positive probability
+            //### toned it down a bit to take in account the possibility of browsers not supporting referers)
+
+            if(!$retro_treatment && ($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('good_referer'))
+            {
+                //Check referer (NOTE: changed 'siteurl' to 'home'...)
+                $blog_url = get_settings('home');
+                if (empty($blog_url))
+                    $blog_url = get_settings('siteurl');
+                $blog_url = str_replace(array("http://", "www."), "", $blog_url);
+
+                if (!$retro_treatment && !empty($blog_url) && ($karma < $skip_ok) && ($karma > $skip_kill) && !stristr($_SERVER['HTTP_REFERER'], $blog_url))
+                {
+                    $karma = -6;
+                    $karma_cmts[] = 'Bad referer: '. $_SERVER['HTTP_REFERER'];
+                }
+            }
+
+            //Look for main osa embedding
+            if(!$retro_treatment && ($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('osa_enabled'))
+            {
+
+                //###DdV assuming osa embeddded ...
+                // good code: karma += 3 // could be faked by a good spambot but unlikely
+                // bad code: karma -= 7 (bad IP could be due to proxy use)
+                // too fast: karma -= 7
+                // too slow: karma -= X (unlikely to be a spammer, could be a legitimate user)
+
+                if(!isset($_POST['osa_time']) || !isset($_POST['osa_code']))
+                {
+                    $karma_cmts[] = __('OSA: Code or time not in submission.');
+                    $karma += $skip_kill;
+                }
+                else
+                {
+
+                    $good_code = osa_get_code($_POST['osa_time'], $comment_post_ID);
+
+                    // Verify code
+                    if($_POST['osa_code'] != $good_code)
+                    {
+                        $karma_cmts[] = __("OSA: Code invalid/forged (IP potentially different).");
+                        $karma -= 7; // OK, this could be a Proxy
+                    }
+                    else
+                    {
+                        //Get Times
+                        $time_now = (int)mysql2date('U', current_time('mysql'));
+                        $time_then = (int)mysql2date('U', $_POST['osa_time']);
+                        $time_taken = max($time_now - $time_then, 1); // security to avoid div by 0 error
+                        // Be sure comment was sent within time window
+                        if((int) $spamk_settings['maxtime'] == 0)
+                            $spamk_settings['maxtime'] = 10; // just ensuring it is not set to 0.
+
+                        if(spamk_option_set('within_time') && ($time_taken > $spamk_settings['maxtime'] * 60))
+                        {
+                            $karma_cmts[] = __("OSA: Commenter exceeded time (took "). ($time_now - $time_then) . __(" seconds") . ", " . __("Max time set to: ") . ($spamk_settings['maxtime'] *60) . __(" seconds") . ").";
+                            $karma -= 1 + max($time_taken / ($spamk_settings['maxtime'] * 60), 10); // DdV Karma Change
+                        }
+                        elseif(spamk_option_set('atleast_time') && ($time_taken < ((int)$spamk_settings['mintime'])))
+                        {
+                            $karma_cmts[] = __("OSA: Commented too fast (took ") . ($time_now - $time_then) . __(" seconds).");
+                            $karma -= 4 + max(($spamk_settings['mintime'] / $time_taken), 10);
+                        }
+                    }
+                }
+            }
+
+            // look for posting regularity and sudden bumps
+            // based after MCIncubus' Snowball Effect Plugin
+            // http://txfx.net/files/wordpress_hacks/wp-snowball-effect.phps
+
+            if(($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('snowball'))
+            {
+                $query_condition = "`comment_author_IP` = '$user_ip' " . ((empty($esc_email)) ? "": "OR `comment_author_email` = '$esc_email' ");
+                $query_condition2 = $query_condition . ((empty($url) ? "" : "OR `comment_author_url` = '$esc_url' "));
+
+                $similar_comments = $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->comments}` WHERE (comment_approved = '0' OR DATE_SUB('$now_gmt',INTERVAL 24 HOUR) < `comment_date_gmt`) AND `comment_ID` <> '$comment_ID' AND ($query_condition2 OR comment_content = '$esc_comment')");
+
+                // get the number of similar *approved* comments posted MORE than 24 hours ago
+                 $history = $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->comments}` WHERE comment_approved = '1' AND DATE_SUB('$now_gmt',INTERVAL 24 HOUR) >= comment_date_gmt AND ($query_condition)"); // no longer checking URL: too easy to forge
+
+                if ( $spamk_settings['trigger'] <= 0)
+                     $spamk_settings['trigger'] = 5;
+
+                if ($similar_comments >= $spamk_settings['trigger'])
+                { // too many similar comments...
+
+                    $recently_approved = $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->comments}` WHERE comment_approved = '1' AND DATE_SUB('$now_gmt',INTERVAL 24 HOUR) < `comment_date_gmt` AND `comment_ID` <> '$comment_ID' AND ($query_condition2 OR `comment_content` = '$esc_comment')");
+
+
+                    if (($history == 0) && ($similar_comments >= $spamk_settings['trigger'] + 2) && ($similar_comments - $recently_approved > $spamk_settings['trigger'])) // first time commenting + X moderated == spammer
+                    {
+                        $wpdb->query("DELETE FROM {$wpdb->comments} WHERE (comment_approved = '0' OR DATE_SUB('$now_gmt',INTERVAL 24 HOUR) <= comment_date_gmt) AND comment_ID <> '$comment_ID' AND ($query_condition2 OR `comment_content` = '$esc_comment')");
+
+                        $karma_cmts[] = "First-time commenter: " . ($similar_comments - $recently_approved) . " posts in moderation, $recently_approved approved less than 24 hours ago (no comment approved more than 24 hours ago). Retroactively killed other comments.";
+                        $karma += $skip_kill; // comment info will be automatically blacklisted
+                    }
+                    elseif($history * $spamk_settings['friendly_multiplier'] < $similar_comments)
+                    { // there aren't enough past comments to prevent moderation
+
+                        // moderate this comment
+                        $karma_cmts[] = __("Commenter has $history comments approved for more than 24 hour, ") . ($similar_comments - $recently_approved) . __(" posts in moderation ($recently_approved approved comment posted in the past 24 hours).");
+
+                        if($similar_comments - $recently_approved >= $spamk_settings['trigger'])
+                        {
+                         // and retroactively moderate similar comments in the last 24 hours
+                            $karma_cmts[] =__("Moderated retroactively other comments");
+                            $wpdb->query("UPDATE $wpdb->comments SET comment_approved = '0' WHERE DATE_SUB('$now_gmt',INTERVAL 24 HOUR) <= comment_date_gmt AND comment_approved = '1' AND ($query_condition2 OR `comment_content` = '$esc_comment')");
+                        }
+
+                        $karma -= 2 + min(($similar_comments - (1 - (1 / $spamk_settings['trigger']))*$recently_approved), 4.5); // the more comments the more likely to end up in moderation...
+                    }
+                }
+
+                if ($history) // commenter has some past comments approved
+                {
+                    $karma += 1;
+
+                    $ip_whitelist = $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE `comment_approved` = '1' AND DATE_SUB('$now_gmt',INTERVAL 48 HOUR) >= comment_date_gmt AND `comment_author_IP` = '$user_ip'");
+                    //###DdV not giving a free ride for less than 3 previously approved comments.
+                    // Reason: a spambot could start by sending one bogus
+                    // comment not looking like spam on a blog, and flood once whitelisted...
+                    if (($ip_whitelist > 1) && ($ip_whitelist < 3))
+                        $karma += 3; // just a small bonus
+                    elseif ($ip_whitelist >= 3)
+                        $karma = $skip_ok;
+
+                    // email not as reliable as IP -> less karma
+                    if (! empty($email))
+                    {
+                        $email_whitelist = $wpdb->get_var("SELECT COUNT(*) FROM $wpdb->comments WHERE `comment_approved` = '1' AND DATE_SUB('$now_gmt',INTERVAL 48 HOUR) >= comment_date_gmt AND `comment_author_email` = '$esc_email'");
+                        if (($email_whitelist-$ip_whitelist > 1) && ($email_whitelist-$ip_whitelist < 5)) // no point counting twice...
+                            $karma += 1;
+                        elseif ($email_whitelist-$ip_whitelist >= 5)
+                            $karma += 5;
+
+                        if (($ip_whitelist > 1) || ($email_whitelist > 1))
+                            $karma_cmts[] = "$ip_whitelist comments with same IP and $email_whitelist with same e-mail previously approved.";
+                    }
+                }
+            }
+
+
+
+            //#DdV: lower karma based on failing Discussion tab checks
+            if(($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('discussion_delete') && !$approved)
+            {
+                $karma -= 3;
+                $karma_cmts[] = "Failed Discussion tab checks.";
+            }
+
+
+
+            if(($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('too_many_links') && ($spamk_settings['link_trigger'] <= count($match_urls)))
+            {            
+                $comment_sans_url = preg_replace("/(<a\\s*.*<\/\\s*a>)/i", "", $comment);
+                if(2*$spamk_settings['link_trigger'] <= count($match_urls))
+                {
+                    $karma_cmts[] = __("Waaaay too many links: ") . count($match_urls);
+                    $karma -= 1 + (count($match_urls) - 2*$spamk_settings['link_trigger']);
+                }
+                elseif (strlen($comment_sans_url) < (10 * count($match_urls)))
+                { // less than 10 times the number of comments in letters
+                    $karma_cmts[] = __("Too many links, not enough substance: ") . count($match_urls) . __(" links for ") . strlen($comment_sans_url) . __(" letters (outside of links).");
+                    $karma -= 1 + (count($match_urls) - $spamk_settings['link_trigger']);
+                }
+            }
+
+
+    //###DdV regex matching using wp-blacklist
+    // code mostly taken from wp-blacklist
+
+    // could start now by sharing the blacklist structure (basically a table that contains all the regex) and possibly add our own module to update it from a centralized server or add to it from the local server...
+    // one URL in regex list: karma -= 7
+    // more than one URL in regex list: karma -= 8+
+         if(($karma < $skip_ok) && spamk_option_set('wp-blacklist') && $spamk_settings['created_blacklist_table'])
+         {
+            // IP  Check
+            $matched_IP = false;
+
+            if ($wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex_type` = 'ip' OR `regex_type`='regex-ip' OR `regex_type`='auto-ip'"))
+
+
+            $sites = $wpdb->get_results("SELECT `regex`, `regex_type` FROM `blacklist` WHERE `regex_type` = 'ip' OR `regex_type`='regex-ip' OR `regex_type`='auto-ip'");
+            if ($sites)
+            {
+                foreach ($sites as $site)
+                {
+                    if ($site->regex_type != "regex-ip")
+                    {
+                        if(strpos($user_ip, $site->regex) !== false)
+                        {
+                            $matched_IP = true;
+
+                            if ($site->regex_type == 'auto-ip')
+                            {
+                                $karma -= 2;
+                                $karma_cmts[] = "Author IP: $user_ip matched " . $site->regex . " (non-verified IP).";
+                            }
+                            else
+                            {
+                                if ($user_ip == $site->regex)
+                                    $karma += $skip_kill;
+                                else
+                                    $karma -= 8;
+
+                                $karma_cmts[] = "Author IP: $user_ip matched " . $site->regex;
+                            }
+
+                            break;
+                        }
+                    }
+                    elseif (preg_match("/^$site->regex/", $user_ip))
+                    {
+                        $matched_IP = true;
+                        $karma_cmts[] = __("Author IP: $user_ip matched regex ") . $site->regex;
+                        $karma -= 6;
+                        break;
+                    }
+                }
+            }
+
+            // if karma is already low enough, only reason to do a URL parse is to see if there are some new URLs to harvest
+            if (($karma > $skip_kill) || screen_blacklist_candidates($match_urls, "url"))
+            {
+                // RBL check
+                if(spamk_option_set('use_rbl') )
+                {
+                    $sites = $wpdb->get_results("SELECT `regex` FROM `blacklist` WHERE `regex_type` ='rbl'");
+                    if ($sites)
+                    {
+                        $rbl_checks = $match_urls;
+                        if (preg_match("/([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)/", $user_ip, $matches))
+                            $rbl_checks[] = $matches[4] . "." . $matches[3] . "." . $matches[2] . "." . $matches[1];
+
+                        foreach ($sites as $site)
+                        {
+                            $rbl_server = $site->regex;
+
+                            foreach($rbl_checks as $this_addr)
+                            {
+                                $this_addr = str_replace(array("http://", "www."), "", $this_addr);
+                                $rbl_host = $this_addr . "." . $rbl_server;
+
+                                $get_host = gethostbyname($rbl_host);
+                                if ($get_host 
+                                	&& ($get_host != $rbl_host)
+                                	&& ($rbl_host != $_SERVER['HTTP_HOST'])
+                                	&& ($rbl_host != $_SERVER['SERVER_ADDR'])
+                                	&& ($rbl_host != "127.0.0.4"))
+                                {
+                                    $karma -= 3; // don't completely kill the comment, ya know, just in case...
+                                    $karma_cmts[] = __("URL/IP: $this_addr blacklisted by RBL $rbl_server ($get_host)");
+
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                $found_matches = 0;
+                // expression check
+                $sites = $wpdb->get_results("SELECT `regex`, `regex_type` FROM blacklist WHERE regex_type='url' OR regex_type='regex-url' OR regex_type='auto-url'");
+                if ($sites)
+                {
+                    foreach ($sites as $site)
+                    {
+                        $found_it = false;
+
+                        foreach($match_urls as $index => $my_url)
+                        {
+                            if ($site->regex_type != "regex-url")
+                            {
+                                if(stripos($my_url, $site->regex) !== false)
+                                {
+                                    $found_it = true;
+                                    unset($match_urls[$index]); // no need to add this one to the list
+
+                                    if ($site->regex_type == 'url')
+                                    {
+                                        $karma_cmts[] = "URL: $my_url matched " . $site->regex;
+                                        $karma -= 1; // lose more karma on top of the final url count...
+                                        $found_matches++;
+                                    }
+                                    else
+                                    {
+                                        $karma -= 2;
+                                        $karma_cmts[] = "URL: $my_url matched " . $site->regex . " (non-verified regex)";
+                                    }							}
+                            }
+                            elseif (preg_match("/$site->regex/i", $my_url))
+                            {
+                                $found_it = true;
+                                unset($match_urls[$index]); // no need to add this one to the list
+                                $found_matches++;
+                                $karma_cmts[] = "URL: $my_url matched ". $site->regex;
+                            }
+                        }
+
+                        if (! $found_it)
+                        {
+                            if ($site->regex_type == "url")
+                            {
+                                if(stripos($my_url, $site->regex) !== false)
+                                {
+                                    if(stripos($email, $site->regex) !== false)
+                                    {
+                                        $karma -= 4;
+                                        $karma_cmts[] = "Author e-mail: $email matched ". $site->regex;
+                                    }
+
+                                    if(stripos($author, $site->regex) !== false)
+                                    {
+                                        $karma -= 5;
+                                        $karma_cmts[] = "Author: $author matched ". $site->regex;
+                                    }
+
+                                    if (stripos($comment, $site->regex) !== false)
+                                    {
+                                        $karma -= 3;
+                                        $karma_cmts[] = "Comment text contained " . $site->regex;
+                                    }
+                                }
+                            }
+                            elseif (preg_match("/$site->regex/i", $email))
+                            {
+                                $karma -= 3;
+                                $karma_cmts[] = "Author e-mail: '$email' matched ". $site->regex;
+                            }
+                            elseif (preg_match("/$site->regex/i", $author))
+                            {
+                                $karma -= 4;
+                                $karma_cmts[] = "Author: '$author' matched ". $site->regex;
+                            }
+                            elseif (preg_match("/$site->regex/i", $comment))
+                            {
+                                $karma -= 2;
+                                $karma_cmts[] = "Comment text: '$comment' matched ". $site->regex;
+                            }
+
+
+                        }
+                    }
+
+                    if ($found_matches)
+                        $karma -= (6 + $found_matches);
+                }
+            }
+        }
+
+
+    //###DdV
+    // wouldn't it be better to completely skip WP's checks and redo our own if necessary?
+    // - don't need the spam word check since we do a regex check (can include the spam words in the check if we want)
+    // - toward the top, we add a check for the number of links that take in account the length of non-linked text (e.g. if there are 10 links for 20 non-linked characters, we slam karma and so on)... something like: karma -= 2 * max(0, (number_of_links - (non_linked_characters / 25)))
+    // - if commenter whitelisted (email previously approved) + (same IP or same URL): karma += 10
+    // - if commenter whitelisted + different IP: karma += 5 // fairly safe since the email is not displayed...
+
+
+            // turn it into a factor for the current karma
+            // if karma already < 0
+            // 		older than $recent: karma *= 1.5
+            // 		older than $recent * 10: karma *= 2
+            // if karma > 0
+            //		younger than $recent: karma *= 2
+
+
+            //Moderate comments on old posts
+            if(($karma < $skip_ok) && ($karma > $skip_kill) && spamk_option_set('old_posts'))
+            {
+                $recent = $spamk_settings['recent'] * 60 * 60 * 24;
+
+                //Check for an override in the post meta table
+                $meta_override = $wpdb->get_var("SELECT `meta_value` FROM `{$wpdb->postmeta}` WHERE `post_id` = {$comment_post_ID} AND (meta_key = 'spamk' OR  `meta_key` = 'osa');");
+                if($meta_override != 'open')
+                {
+                    $post_date_gmt = $wpdb->get_var("SELECT `post_date_gmt` FROM `{$wpdb->posts}` WHERE `ID` = {$comment_post_ID};");
+                    $post_time = (int)mysql2date('U', $post_date_gmt);
+                    $time_now = (int)mysql2date('U', current_time('mysql'));
+                    $time_diff = $time_now - $post_time;
+                    if($time_diff > $recent)
+                    {
+                        if(spamk_option_set('delete_closed'))
+                        {
+                            $karma_cmts[] = "Comment on old post.";
+                            $karma += $skip_kill;
+                        }
+                        elseif ($karma < 0)
+                        {
+                            if ($time_diff > 10*$recent)
+                            {
+                                $karma_cmts[] = "Comment on VERY old post.";
+                                $karma *= 2;
+                            }
+                            else
+                            {
+                                $karma_cmts[] = "Comment on old post.";
+                                $karma *= 1.5;
+                            }
+                        }
+                    }
+                    elseif ($karma > 0)
+                    {
+                        $karma *= 1.2;
+                        $karma_cmts[] = "Comment on recent post.";
+                    }
+                }
+            }
+    //###DdV maybe more checks?
+
+            $karma += $spamk_settings['flexibility'];
+
+        }
+
+
+// Once done, we crosscheck the final karma score with our scale... might want to tweak these values:
+
+// x <= -7 => delete, no notice (maybe keep a log)
+// -6 <= x <= -4 => requires further check (offer choice between captcha or email auto-confirmation) to be put into moderation
+// -3 <= x <= -1 => requires further check (offer choice between captcha or email auto-confirmation) to be put posted
+// x >= 0 => posted directly
+
+// first we tip off the scale one way or another (lenience => ++, strictness => --, normal => no change)
+
+
+        if ($karma <= -7)
+            $treat = "hell";
+        elseif ($karma < 0) // or 1?
+        {
+            if (!$retro_treatment && spamk_option_set('captcha_test') && is_file(ABSPATH. "wp-content/spam-karma/hn_captcha.class.php") && is_writable(kCaptchaTempFolder))
+            {
+
+//###TODO
+                $karma_cmts[] = "CAPTCHA:sent-0-times:" . (current_time('timestamp', 1) + $expiration_delay);
+                $treat = "captcha";
+            }
+            else
+            {
+                if ($karma < -4)
+                    $treat = "hell";
+                elseif($karma < 0)
+                    $treat = "purgatory";
+                else
+                    $treat = "paradise";
+            }
+        }
+        else
+            $treat = "paradise";
+
+        if ($treat != "paradise")
+        {
+            if(!$retro_treatment && spamk_option_set('include_headers_fail'))
+            {
+                $karma_cmts[] = " ===== SERVER VARIABLES ===== ";
+                foreach($_SERVER as $skey => $sval)
+                    $karma_cmts[] = addslashes( $skey ." => ". $sval);
+            }
+            if(!$retro_treatment && spamk_option_set('include_request_fail'))
+            {
+                $karma_cmts[] = " ===== REQUEST HEADERS ===== ";
+                foreach($_REQUEST as $skey => $sval)
+                    $karma_cmts[] = addslashes($skey . " => " . $sval);
+            }
+
+            if(spamk_option_set('include_execution_time'))
+                $karma_cmts[] = "Execution took: " . (microtime(true) - $start_time) . " seconds";
+
+        }
+
+         $karma_cmts[] = "KARMA: $karma";
+         $karma_cmts[] = "Treatment: $treat";
+
+        if ($treat == "hell") // add the cheeky bastard's urls to the list
+        {
+            $karma_cmts[] = "Comment posted on Post ID: ". $comment_post_ID;
+            $wpdb->query("DELETE FROM {$wpdb->comments} WHERE comment_ID = {$comment_ID} LIMIT 1;"); // kill the nasty bugger...
+
+            if ($spamk_settings['created_blacklist_table'])
+            {
+                // Add author IP to blacklist
+                $buf = mysql_escape_string($user_ip);
+                $request = $wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex` ='$buf' AND `regex_type` = '". ($matched_IP ? "ip" : "auto-ip") . "'");
+
+                if (!$request)
+                {
+                    if($matched_IP)
+                    {
+                        if ($wpdb->query("INSERT INTO `blacklist` (`regex`, `regex_type`) VALUES ('$buf','ip')"))
+                        {
+                            $spamk_settings['repeating_offenders'][$wpdb->insert_id] = $user_ip;
+
+                            $wpdb->query("DELETE FROM `blacklist` WHERE `regex` = '$buf' AND `regex_type` = 'auto-ip'");
+                            $karma_cmts[] = "Added Repeating Offender IP to permanent ip list ($user_ip).";
+                        }
+                    }
+                    else
+                    {
+                        $wpdb->query("INSERT INTO blacklist (`regex`, `regex_type`) VALUES ('$buf','auto-ip')");
+                        $karma_cmts[] = "Added Author IP to auto-ip list ($user_ip).";
+                    }
+                }
+
+                if (screen_blacklist_candidates($match_urls, "url"))
+                    foreach($match_urls as $my_url)
+                    {
+                        $ps = strpos($my_url, '/'); // should we use strrpos()?
+                        if ($ps !== false)
+                            $my_url = substr($my_url, 0, $ps);
+                        $buf = mysql_escape_string($my_url);
+                        if (!$wpdb->get_var("SELECT COUNT(*) FROM `blacklist` WHERE `regex_type` = 'auto-url' AND `regex` = '$buf'"))
+                        {
+                            $wpdb->query("INSERT INTO `blacklist` (`regex`, `regex_type`) VALUES ('$buf','auto-url')");
+                            $karma_cmts[] = "Added URL to auto-url list ($my_url).";
+                        }
+                    }
+            }
+
+            //Send email?
+            if(spamk_option_set('email_deleted'))
+            {
+                $message = "Reason(s):\n";
+                foreach($karma_cmts as $cmt)
+                    $message .= $cmt . "\n";
+
+                if (($size = strlen($comment)) > 1000)
+                    $comment = substr($comment, 0, 200) . "\n[...]\n". substr($comment, $size-200) . __("\n\nTruncated comment (was over 1000 characters long).");
+
+                $message .= "Author : ".$author."\nEmail  : ".$email."\nURL    : ".$url."\nIP     : ". $user_ip ."\nComment:\n".$comment;
+
+                if (spamk_option_set('digest_threshold') && ($spamk_settings['digest_threshold_value'] > 3) && ($karma < -($spamk_settings['digest_threshold_value'])))
+                {
+                    $spamk_settings['skipped_count'] += 1;
+                    $message = "";
+                }
+                elseif (spamk_option_set('email_deleted_digest'))
+                {
+                    $spamk_settings['digest_count'] += 1;
+
+                    $spamk_settings['digest_message'] .= "=+ Comment #". $spamk_settings['digest_count'] . "\n" . $message . " +=\n\n";
+
+                    if(($spamk_settings['digest_count'] >= $spamk_settings['email_deleted_digest_size']) || (strlen($spamk_settings['digest_message']) > 50000))
+                    {
+                        if (strlen($spamk_settings['digest_message']) > 50000)
+                            $message = __("Note: this report was sent prematurily in order to avoid overflowing the digest (try setting a lower value for the \"Only send digest every X deleted comments\" option).") . "\n\n";
+                        else
+                            $message = "";
+
+                            $message .= __("Spam Karma Digest Report:"). "\n\n" . $spamk_settings['digest_count'] . " comments digested since last report (mmm, yummy!):\n\n" . $spamk_settings['digest_message'];
+                        $spamk_settings['digest_count'] = 0;
+                        $spamk_settings['digest_message'] = "";
+
+                        // save settings now... just in case we crash(?)
+                        spamk_update_option('spamk_settings', $spamk_settings);
+                    }
+                    else
+                        $message = "";
+
+                }
+
+                if (! empty($message))
+                {
+                    if ($spamk_settings['skipped_count'])
+                    {
+                        $message = "Deleted " . $spamk_settings['skipped_count'] . " spam(s) with a karma below -". $spamk_settings['digest_threshold_value'] . " (not included in this digest).\n\n" . $message;
+                        $spamk_settings['skipped_count'] = 0;
+
+                    }
+
+                    $email = get_settings("admin_email");
+                    $subject = "[" . get_settings('blogname') . '] Spam Karma: Comment deleted';
+                    $headers = "From: " . get_settings('admin_email') . "\r\n"
+                    . "Reply-To: " . get_settings('admin_email') . "\r\n"
+                    . "X-Mailer: PHP/" . phpversion() . "\r\n"
+                    . "Content-Type: text/plain; charset=\"" . get_settings('blog_charset') . "\"\r\n";
+
+                    wp_mail($email, $subject, $message, $headers);
+
+                }
+            }
+
+
+            setcookie('comment_author_' . COOKIEHASH, $author, time() + 30000000, COOKIEPATH);
+            setcookie('comment_author_email_' . COOKIEHASH, $email, time() + 30000000, COOKIEPATH);
+            setcookie('comment_author_url_' . COOKIEHASH, $url, time() + 30000000, COOKIEPATH);
+
+            //Update counter
+            $spamk_settings['delspam'] += 1;
+            spamk_update_option('spamk_settings', $spamk_settings);
+
+            if (! $retro_treatment)
+            {
+                // might as well use this occasion to do a quick roundup of past moderated comments...
+                $mod_comments = $wpdb->get_results("SELECT `comment_ID` FROM $wpdb->comments WHERE `comment_approved` = '0' AND `comment_ID` != {$comment_ID} AND `comment_content` NOT LIKE '%{$open_meta_spamk}CAPTCHA:EXPIRED%' AND (`comment_content` NOT LIKE '%{$open_meta_spamk}%' OR `comment_content` LIKE '%{$open_meta_spamk}CAPTCHA%')");
+
+                if ($mod_comments)
+                    foreach($mod_comments as $this_cmt)
+                    {
+                        spamk_comment_post($this_cmt->comment_ID, true);
+                    }
+
+
+                if ($karma <= -10)
+                    sleep (min(exp (-8-$karma), 100)); // let's hog his resources a little bit...
+
+                die(__('Sorry but the total effect of your comment\'s actions and conduct during the successive phases of its existence, did not justify giving it a second chance in this world of pain and misery...<br/><br/>In other words: it got trashed.<br/>Bad Karma, man, bad karma...'));
+            }
+        }
+        elseif ($treat == "purgatory" || $treat == "captcha")
+        {
+        //###DdV TO DO: add moderation digest
+
+            $headers = "";
+            foreach ($karma_cmts as $cmt)
+                $headers .= $open_meta_spamk.  $cmt . $close_meta_spamk . "\n";
+
+            $comment = $headers . $comment;
+
+            $wpdb->query("UPDATE `{$wpdb->comments}` SET `comment_content` = '". mysql_escape_string($comment) . "', `comment_approved` = '0' WHERE comment_ID = {$comment_ID};");
+
+            //Update counter
+            $spamk_settings['moderate_spam'] = ((int)@$spamk_settings['moderate_spam']) + 1;
+            spamk_update_option('spamk_settings', $spamk_settings);
+
+            $approved = 0;
+
+            if ($treat == "captcha")
+            {
+                header('Expires: Mon, 26 Jul 1997 05:00:00 GMT');
+                header('Last-Modified: ' . gmdate('D, d M Y H:i:s') . ' GMT');
+                header('Cache-Control: no-cache, must-revalidate');
+                header('Pragma: no-cache');
+
+                $location = get_settings("siteurl") . "/wp-content/spam-karma/captcha_confirm_form.php?c_id={$comment_ID}&c_author=" . urlencode($author);
+
+                if ($is_IIS)
+                    header("Refresh: 0;url=$location");
+                else
+                    header("Location: $location");
+
+                exit;
+            }
+            else
+            {
+                // WP 12: if not forwarded to captcha, then need to take care of notification
+				wp_notify_moderator($comment_ID);
+
+                if (! $retro_treatment)
+                {
+                    echo __("Spam Karma: Your comment looks suspiciously like spam and has been moderated. It will be displayed once the admin approves it.<br/>");
+                    exit;
+                }
+            }
+        }
+        elseif($treat == "paradise")
+        {
+          
+            $wpdb->query("UPDATE `{$wpdb->comments}` SET `comment_approved` = '1' WHERE comment_ID = {$comment_ID};");
+
+            // if comment was previously moderated and has been approved by SK, we should send an email:
+            if (!$wp_13 && get_settings('comments_notify'))
+                    wp_notify_postauthor($comment_ID, 'comment');
+			
+			//Update counter
+			$spamk_settings['approved_cmts'] += 1;
+			spamk_update_option('spamk_settings', $spamk_settings);
+			
+			$approved = true;
+			
+         }
+
+        return $comment_ID;
+    }
+
+
+    if(! function_exists('wp_mail'))
+    { // WP 1.2 Compatibility
+        function wp_mail($email, $subject, $message, $headers)
+        {
+            @mail($email, $subject, $message, $headers);
+        }
+    }
+
+
+
+    if (!function_exists('osa_get_code'))
+    {
+        function osa_get_code($time, $postid)
+        {
+			if (! isset($_SERVER['SERVER_ADDR'])) // IIS compat
+				$_SERVER['SERVER_ADDR'] = $_SERVER['LOCAL_ADDR'];
+				
+            if(spamk_option_set('same_remote_ip'))
+                return md5($time . $_SERVER['REMOTE_ADDR'] . $_SERVER['SERVER_ADDR'] . $postid . DB_PASSWORD);
+            else
+                return md5($time . $_SERVER['SERVER_ADDR'] . $postid . DB_PASSWORD);
+        }
+    }
+
+
+    if (!function_exists('osa_form'))
+    {
+        function osa_form()
+        {
+            global $wrote_osa_form;
+            if ($wrote_osa_form) // insert only once
+                return;
+            global $id;
+
+            echo return_osa_form($id);
+            $wrote_osa_form = true;
+        }
+
+        function return_osa_form($id)
+        {
+            global $wrote_osa_form;
+            if ($wrote_osa_form) // insert only once
+                return "";
+            $wrote_osa_form = true;
+
+            
+            $osa_time = current_time('mysql');
+            $osa_code = osa_get_code($osa_time, $id);
+            return "<div style=\"display:inline;\"><input type=\"hidden\" id=\"osa_time\" name=\"osa_time\" value=\"{$osa_time}\" />\n" . "<input type=\"hidden\" id=\"osa_code\" name=\"osa_code\" value=\"{$osa_code}\" /></div>\n";
+        }
+
+
+    }
+
+    if (! function_exists('spamk_stats'))
+    {
+        function spamk_stats ($return = false, $count_only = false)
+        {
+            $str = "";
+            $spamk_settings = spamk_get_settings('spamk_settings');
+            if ($del_count = $spamk_settings['delspam'])
+                if ($count_only)
+                    $str = $del_count;
+                else
+                    $str = "<strong>Advice to spammers:</strong> <a href=\"http://unknowngenius.com/blog/wordpress/spam-karma/\">Spam Karma</a> has eaten <strong>$del_count</strong> comment spams on this blog since its last reset. Wanna be the next one?";
+
+            if ($return)
+                return $str;
+            else
+                echo $str;
+        }
+
+    }
+
+    function spamk_comment_text($comment_text)
+    {
+        global $open_meta_spamk, $close_meta_spamk;
+        if(strpos($_SERVER['REQUEST_URI'], 'wp-admin') === true)
+        {
+            return trim(preg_replace("/^{$open_meta_spamk}(.*){$close_meta_spamk}\\n*/m", "<strong><em class=\"hilite\">$1</em></strong><br/>\n", $comment_text));
+        }
+        else
+        {
+            return trim(preg_replace("/^{$open_meta_spamk}.*{$close_meta_spamk}\\n*/m", '', $comment_text));
+        }
+    }
+
+    function spamk_wp_set_comment_status($comment_id)
+    {
+        global $open_meta_spamk, $close_meta_spamk, $wpdb;
+
+        $comment = $wpdb->get_row("SELECT * FROM {$wpdb->comments} WHERE comment_ID = {$comment_id}");
+        $comment_content = stripslashes(trim(preg_replace("/^{$open_meta_spamk}.*{$close_meta_spamk}$/m", '', $comment->comment_content)));
+        $wpdb->query("UPDATE {$wpdb->comments} SET comment_content = '" . mysql_escape_string($comment_content) . "' WHERE comment_ID = {$comment_id}");
+    }
+
+    function spamk_the_content($content)
+    {
+        global $post, $aol_user;
+
+        $closed = false;
+        $aol_user = false;
+
+        if(is_single())
+        {
+            if (spamk_option_set('old_posts') && spamk_option_set('close_form'))
+            {
+                $spamk_settings = spamk_get_settings('spamk_settings');
+                $recent = $spamk_settings['recent'];
+
+                $post_time = (int)mysql2date('U', $post->post_date_gmt);
+                $time_now = (int)mysql2date('U', current_time('mysql'));
+                $time_diff = $time_now - $post_time;
+                if(($time_diff > ($recent * 60 * 60 * 24)) && ('open' == $post->comment_status))
+                {
+                    $post->comment_status = 'closed';
+                    $closed = true;
+                }
+            }
+
+            if (!$closed && spamk_option_set('osa_enabled'))
+            {
+                if ((strpos($_SERVER['HTTP_USER_AGENT'], "AOL") !== false)
+                    && (substr(gethostbyaddr($_SERVER['REMOTE_ADDR']), -8, 8) == '.aol.com'))
+                { // because of proxy caching and overall braindead nature of AOL software,
+                // users running the AOL browser on AOL would fail the OSA test
+                    $post->comment_status = 'closed';
+                    $aol_user = true;
+                }
+
+
+                global $spamk_post_ID, $id;
+
+                $spamk_post_ID = $id; // work around compatibility problems: wanna have the post ID now...
+                ob_start('spamk_insert_OSA');            
+
+            }            
+        }
+
+        return $content;
+    }
+    
+
+    function comment_form_hook($post_id)
+    {
+        echo return_osa_form($post_id);
+    }
+
+    function spamk_insert_OSA($str)
+    {
+        global $aol_user, $spamk_post_ID;
+        if ($aol_user)
+            return str_replace(__('Sorry, the comment form is closed at this time.'), __('The AOL browser you are using makes it impossible for this blog to properly identify you as a legitimate commenter (and not a spammer).<br/> To be able to comment, please use <a href="http://getfirefox.com">another browser</a>.<br/> Sorry...'),  $str);
+        else
+            return str_replace("\"commentform\">", "\"commentform\">\n" . return_osa_form($spamk_post_ID),  $str);
+
+    }
+
+    function spamk_override_notification($junk)
+    {
+        $options = spamk_get_settings('spamk_options');
+        $settings = spamk_get_settings('spamk_settings');
+
+        if (! $options['spamk_saved_options'])
+        {
+            $options['save_moderation_notify'] = get_settings('moderation_notify');
+            $options['save_comments_notify'] = get_settings('comments_notify');
+            $settings['save_moderation_keys'] = get_settings('moderation_keys');
+            $settings['save_comment_max_links'] = get_settings('comment_max_links');
+        }
+
+		$options['spamk_saved_options'] = true;
+ 
+        update_option('comments_notify', false);
+        update_option('moderation_notify', false);
+        // shortcut WP's moderation checks so they do not trigger the moderation email
+        update_option('moderation_keys', '');
+        update_option('comment_max_links', 666);
+		spamk_update_option('spamk_options', $options);
+		spamk_update_option('spamk_settings', $settings);
+		
+        return $junk;
+    }
+
+    function spamk_restore_notification($junk)
+    {
+    	global $wp_13;
+         $options = spamk_get_settings('spamk_options');
+   	
+		if (! $wp_13 && $options['spamk_saved_options'])
+		{
+			$settings = spamk_get_settings('spamk_settings');
+			update_option('comments_notify',  $options['save_comments_notify']);
+			update_option('moderation_notify',  $options['save_moderation_notify']);
+			update_option('moderation_keys', $settings['save_moderation_keys']);
+			update_option('comment_max_links', $settings['save_comment_max_links']);
+			$options['spamk_saved_options'] = false;
+			spamk_update_option('spamk_options', $options);
+		}
+	}
+
+
+    add_action('admin_menu', 'spamk_add_options_page');
+    add_action('comment_post', 'spamk_comment_post', 1);
+    add_action('wp_set_comment_status', 'spamk_wp_set_comment_status', 1);
+    add_filter('comment_text', 'spamk_comment_text', 9);
+    add_filter('the_content', 'spamk_the_content');
+
+    add_action('trackback_post', 'spamk_trackback_post');
+
+    if (! $wp_13)
+    {
+        add_filter('post_comment_text', 'spamk_override_notification');
+ 		add_action('admin_head', 'spamk_restore_notification');
+ 	}
+
+ //###DdV this should insert the OSA code realtime
+    if($comment_hook)
+        add_action('comment_form', 'comment_form_hook', 1);
+
+}
+
+?>

@@ -1,0 +1,5 @@
+RewriteEngine On
+RewriteBase /
+RewriteCond %{HTTP_REFERER} ^http://spheredesigns.net.*$ [NC]
+RewriteCond %{HTTP_REFERER} ^http://(.*).spheredesigns.net.*$ [NC]
+RewriteRule . /jackass.html [L]
